@@ -26,6 +26,7 @@ from ttkia_sdk.models import (
     AuthenticationError,
     RateLimitError,
     NotFoundError,
+    StreamEvent, 
 )
 
 __all__ = [
@@ -39,4 +40,5 @@ __all__ = [
     "AuthenticationError",
     "RateLimitError",
     "NotFoundError",
+    StreamEvent, 
 ]

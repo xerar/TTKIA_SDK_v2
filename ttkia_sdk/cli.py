@@ -3,11 +3,12 @@ TTKIA CLI – Command line interface for TTKIA.
 
 Usage:
     ttkia ask "How do I configure OSPF?"
-    ttkia chat
+    ttkia chat                              # streaming SSE (real-time)
+    ttkia chat --no-stream                  # classic mode (wait for full response)
     ttkia health
     ttkia envs
     ttkia history
-    ttkia config --url https://ttkia.example.com --token eyJhbG...
+    ttkia config --url https://ttkia.example.com --api-key ttkia_sk_...
 """
 
 from __future__ import annotations
@@ -53,13 +54,14 @@ def _get_client() -> TTKIAClient:
 
     if not url:
         print("❌ No TTKIA URL configured.")
-        print("   Run: ttkia config --url https://your-ttkia-server.com --token YOUR_TOKEN")
-        print("   Or set: export TTKIA_URL=... and export TTKIA_TOKEN=...")
+        print("   Run: ttkia config --url https://your-ttkia-server.com --api-key ttkia_sk_...")
+        print("   Or set: export TTKIA_URL=... and export TTKIA_API_KEY=...")
         sys.exit(1)
 
     if not token and not api_key:
         print("❌ No authentication configured.")
-        print("   Run: ttkia config --url URL --token YOUR_APP_TOKEN")
+        print("   Run: ttkia config --url URL --api-key ttkia_sk_...")
+        print("   Or generate an API Key from your TTKIA profile.")
         sys.exit(1)
 
     verify_ssl = config.get("verify_ssl", True)
@@ -116,7 +118,7 @@ def cmd_config(args):
     if args.url or args.token or args.api_key:
         _save_config(config)
         print(f"✅ Config saved to {_CONFIG_FILE}")
-    
+
     # Show current config
     config = _load_config()
     if config:
@@ -130,6 +132,8 @@ def cmd_config(args):
         api_key_val = config.get('api_key', '')
         if api_key_val:
             print(f"  API Key: {api_key_val[:16]}...")
+        else:
+            print(f"  API Key: (not set)")
         print(f"  Timeout: {config.get('timeout', 120)}s")
         print(f"  SSL:     {config.get('verify_ssl', True)}")
     else:
@@ -178,7 +182,7 @@ def cmd_ask(args):
             # Metadata footer
             conf = response.confidence or 0
             conf_color = _C.GREEN if conf >= 0.7 else _C.YELLOW if conf >= 0.4 else _C.RED
-            
+
             print(f"{_C.DIM}{'─' * 60}")
             print(f"  Confidence: {conf_color}{conf:.0%}{_C.DIM}"
                   f"  │  Sources: {len(response.docs)}d/{len(response.webs)}w"
@@ -208,14 +212,20 @@ def cmd_ask(args):
                     "confidence": response.confidence,
                     "conversation_id": response.conversation_id,
                     "message_id": response.message_id,
-                    "tokens": {"input": response.token_usage.input_tokens, "output": response.token_usage.output_tokens},
+                    "tokens": {
+                        "input": response.token_usage.input_tokens,
+                        "output": response.token_usage.output_tokens,
+                    },
                     "timing": response.timing.summary(),
-                    "sources": [{"title": s.title, "source": s.source, "web": s.is_web} for s in response.sources],
+                    "sources": [
+                        {"title": s.title, "source": s.source, "web": s.is_web}
+                        for s in response.sources
+                    ],
                 }
                 print(json.dumps(out, indent=2, ensure_ascii=False))
 
         except AuthenticationError:
-            print(f"{_C.RED}❌ Authentication failed. Check your token with: ttkia config{_C.RESET}")
+            print(f"{_C.RED}❌ Authentication failed. Check your config with: ttkia config{_C.RESET}")
             sys.exit(1)
         except RateLimitError as e:
             print(f"{_C.YELLOW}⏳ Rate limited. Retry in {e.retry_after}s{_C.RESET}")
@@ -225,14 +235,143 @@ def cmd_ask(args):
             sys.exit(1)
 
 
+# ───────────────────────────────────────────────────────────
+# CHAT – streaming SSE helpers
+# ───────────────────────────────────────────────────────────
+
+def _chat_query_stream(client, user_input, conversation_id, args):
+    """
+    Execute a chat query via SSE streaming.
+    Prints text token-by-token as it arrives.
+    Returns updated (conversation_id).
+    """
+    t0 = time.time()
+    metadata = None
+    sources_data = None
+    had_thinking = False
+
+    print(f"\n{_C.BOLD}TTKIA:{_C.RESET} ", end="", flush=True)
+
+    for event in client.query_stream(
+        user_input,
+        conversation_id=conversation_id,
+        style=args.style,
+        prompt=args.prompt,
+        web_search=getattr(args, '_web', False),
+    ):
+        match event.event:
+            case "text":
+                print(event.content, end="", flush=True)
+
+            case "thinking":
+                if not had_thinking:
+                    print(f"\n{_C.DIM}  💭 Thinking...{_C.RESET}", end="", flush=True)
+                    had_thinking = True
+
+            case "thinking_end":
+                print(f" done{_C.RESET}")
+                print(f"{_C.BOLD}TTKIA:{_C.RESET} ", end="", flush=True)
+
+            case "sources":
+                sources_data = event.data
+
+            case "metadata":
+                metadata = event.data
+
+            case "error":
+                print(f"\n{_C.RED}❌ {event.data.get('error', 'Unknown error')}{_C.RESET}\n")
+                return conversation_id
+
+            case "done":
+                pass
+
+    elapsed = time.time() - t0
+
+    # Update conversation_id from first response
+    if metadata and not conversation_id:
+        conversation_id = metadata.get("conversation_id")
+
+    # Footer
+    if metadata:
+        conf = metadata.get("confidence") or 0
+        conf_color = _C.GREEN if conf >= 0.7 else _C.YELLOW if conf >= 0.4 else _C.RED
+        tokens = metadata.get("token_counts", {})
+        total_tokens = tokens.get("input", 0) + tokens.get("output", 0)
+        n_src = 0
+        if sources_data:
+            n_src = len(sources_data.get("docs", [])) + len(sources_data.get("webs", []))
+
+        print(f"\n{_C.DIM}  [{conf_color}{conf:.0%}{_C.DIM}"
+              f" │ {n_src}src │ {total_tokens}tok │ {elapsed:.1f}s]{_C.RESET}\n")
+    else:
+        print("\n")
+
+    # Sources detail
+    if getattr(args, '_show_sources', False) and sources_data:
+        all_src = sources_data.get("docs", []) + sources_data.get("webs", [])
+        for s in all_src:
+            is_web = s.get("tag") == "internet"
+            icon = "🌐" if is_web else "📄"
+            print(f"  {_C.DIM}{icon} {s.get('title') or s.get('source', '?')}{_C.RESET}")
+        print()
+
+    return conversation_id
+
+
+def _chat_query_classic(client, user_input, conversation_id, args):
+    """
+    Execute a chat query via /query_complete (full response).
+    Fallback when --no-stream is used or if streaming is unavailable.
+    Returns updated (conversation_id).
+    """
+    t0 = time.time()
+    response = client.query(
+        user_input,
+        conversation_id=conversation_id,
+        style=args.style,
+        prompt=args.prompt,
+        web_search=getattr(args, '_web', False),
+    )
+    elapsed = time.time() - t0
+
+    if response.is_error:
+        print(f"\n{_C.RED}❌ {response.error}{_C.RESET}\n")
+        return conversation_id
+
+    if not conversation_id:
+        conversation_id = response.conversation_id
+
+    conf = response.confidence or 0
+    conf_color = _C.GREEN if conf >= 0.7 else _C.YELLOW if conf >= 0.4 else _C.RED
+
+    print(f"\n{_C.BOLD}TTKIA:{_C.RESET} {response.text}")
+    print(f"{_C.DIM}  [{conf_color}{conf:.0%}{_C.DIM}"
+          f" │ {len(response.sources)}src │ {response.token_usage.total}tok"
+          f" │ {elapsed:.1f}s]{_C.RESET}\n")
+
+    if getattr(args, '_show_sources', False) and response.sources:
+        for s in response.sources:
+            icon = "🌐" if s.is_web else "📄"
+            print(f"  {_C.DIM}{icon} {s.title or s.source}{_C.RESET}")
+        print()
+
+    return conversation_id
+
+
+# ───────────────────────────────────────────────────────────
+# CHAT – main command
+# ───────────────────────────────────────────────────────────
+
 def cmd_chat(args):
-    """Interactive chat session."""
+    """Interactive chat session with real-time streaming."""
     client = _get_client()
     conversation_id = args.conversation
+    use_stream = not getattr(args, 'no_stream', False)
 
-    print(f"{_C.BOLD}💬 TTKIA Interactive Chat{_C.RESET}")
+    mode_label = "streaming" if use_stream else "classic"
+    print(f"{_C.BOLD}💬 TTKIA Interactive Chat{_C.RESET} {_C.DIM}({mode_label}){_C.RESET}")
     print(f"{_C.DIM}   Style: {args.style} │ Prompt: {args.prompt}")
-    print(f"   Commands: /quit  /new  /export  /sources  /id{_C.RESET}")
+    print(f"   Commands: /quit  /new  /export  /sources  /web  /id  /help{_C.RESET}")
     print()
 
     try:
@@ -245,7 +384,7 @@ def cmd_chat(args):
             if not user_input:
                 continue
 
-            # Slash commands
+            # ── Slash commands ──
             if user_input.startswith("/"):
                 cmd = user_input.lower().split()[0]
                 if cmd in ("/quit", "/exit", "/q"):
@@ -287,43 +426,23 @@ def cmd_chat(args):
                     print(f"{_C.DIM}  Unknown command. Type /help{_C.RESET}")
                     continue
 
-            # Query
+            # ── Query ──
             try:
-                t0 = time.time()
-                response = client.query(
-                    user_input,
-                    conversation_id=conversation_id,
-                    style=args.style,
-                    prompt=args.prompt,
-                    web_search=getattr(args, '_web', False),
-                )
-                elapsed = time.time() - t0
-
-                if response.is_error:
-                    print(f"\n{_C.RED}❌ {response.error}{_C.RESET}\n")
-                    continue
-
-                # Update conversation
-                if not conversation_id:
-                    conversation_id = response.conversation_id
-
-                # Print response
-                conf = response.confidence or 0
-                conf_color = _C.GREEN if conf >= 0.7 else _C.YELLOW if conf >= 0.4 else _C.RED
-
-                print(f"\n{_C.BOLD}TTKIA:{_C.RESET} {response.text}")
-                print(f"{_C.DIM}  [{conf_color}{conf:.0%}{_C.DIM} │ {len(response.sources)}src │ {response.token_usage.total}tok │ {elapsed:.1f}s]{_C.RESET}\n")
-
-                # Sources
-                if getattr(args, '_show_sources', False) and response.sources:
-                    for s in response.sources:
-                        icon = "🌐" if s.is_web else "📄"
-                        print(f"  {_C.DIM}{icon} {s.title or s.source}{_C.RESET}")
-                    print()
+                if use_stream:
+                    conversation_id = _chat_query_stream(
+                        client, user_input, conversation_id, args
+                    )
+                else:
+                    conversation_id = _chat_query_classic(
+                        client, user_input, conversation_id, args
+                    )
 
             except RateLimitError as e:
                 print(f"\n{_C.YELLOW}⏳ Rate limited. Wait {e.retry_after}s{_C.RESET}\n")
                 time.sleep(e.retry_after)
+            except AuthenticationError:
+                print(f"\n{_C.RED}❌ Authentication failed. Check: ttkia config{_C.RESET}\n")
+                break
             except TTKIAError as e:
                 print(f"\n{_C.RED}❌ [{e.status_code}] {e.message}{_C.RESET}\n")
 
@@ -415,7 +534,7 @@ def main():
     p.set_defaults(func=cmd_health)
 
     # ── ask ──
-    p = sub.add_parser("ask", help="Send a query")
+    p = sub.add_parser("ask", help="Send a query (complete response)")
     p.add_argument("query", nargs="+", help="The question to ask")
     p.add_argument("-c", "--conversation", help="Continue a conversation (ID)")
     p.add_argument("-s", "--style", default="concise", help="Response style (default: concise)")
@@ -427,10 +546,12 @@ def main():
     p.set_defaults(func=cmd_ask)
 
     # ── chat ──
-    p = sub.add_parser("chat", help="Interactive chat session")
+    p = sub.add_parser("chat", help="Interactive chat (streaming by default)")
     p.add_argument("-c", "--conversation", help="Continue a conversation (ID)")
     p.add_argument("-s", "--style", default="concise", help="Response style")
     p.add_argument("-p", "--prompt", default="default", help="Prompt template")
+    p.add_argument("--no-stream", action="store_true",
+                    help="Disable streaming (wait for full response)")
     p.set_defaults(func=cmd_chat)
 
     # ── envs ──

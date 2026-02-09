@@ -139,6 +139,41 @@ class QueryResponse(BaseModel):
         return f"[{self.confidence or 0:.0%}] {preview}"
 
 
+class StreamEvent(BaseModel):
+    """
+    A single event from the SSE query stream.
+
+    Attributes:
+        event: Event type – "text", "thinking", "thinking_end",
+               "sources", "metadata", "error", "done".
+        data: Parsed JSON payload of the event.
+    """
+    event: str
+    data: Dict[str, Any] = Field(default_factory=dict)
+
+    @property
+    def is_text(self) -> bool:
+        return self.event == "text"
+
+    @property
+    def is_done(self) -> bool:
+        return self.event == "done"
+
+    @property
+    def is_error(self) -> bool:
+        return self.event == "error"
+
+    @property
+    def content(self) -> str:
+        """Shortcut: returns data['content'] for text/thinking events."""
+        return self.data.get("content", "")
+
+    def __str__(self) -> str:
+        if self.is_text:
+            return self.content
+        return f"[{self.event}] {self.data}"
+
+
 class ConversationMessage(BaseModel):
     """A single message in a conversation."""
     role: str
@@ -198,3 +233,37 @@ class FeedbackResult(BaseModel):
     """Result of submitting feedback."""
     success: bool
     message: str = ""
+
+class StreamEvent(BaseModel):
+    """
+    A single event from the SSE query stream.
+
+    Attributes:
+        event: Event type – "text", "thinking", "thinking_end",
+               "sources", "metadata", "error", "done".
+        data: Parsed JSON payload of the event.
+    """
+    event: str
+    data: Dict[str, Any] = Field(default_factory=dict)
+
+    @property
+    def is_text(self) -> bool:
+        return self.event == "text"
+
+    @property
+    def is_done(self) -> bool:
+        return self.event == "done"
+
+    @property
+    def is_error(self) -> bool:
+        return self.event == "error"
+
+    @property
+    def content(self) -> str:
+        """Shortcut: returns data['content'] for text/thinking events."""
+        return self.data.get("content", "")
+
+    def __str__(self) -> str:
+        if self.is_text:
+            return self.content
+        return f"[{self.event}] {self.data}"

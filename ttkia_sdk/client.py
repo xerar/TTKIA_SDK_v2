@@ -475,3 +475,132 @@ class TTKIAClient:
     def __repr__(self) -> str:
         auth = "api_key" if self._api_key else "bearer"
         return f"TTKIAClient(base_url={self.base_url!r}, auth={auth})"
+
+    # ──────────────────────────────────────────────────────────
+    # STREAMING QUERY (via /query_stream SSE)
+    # ──────────────────────────────────────────────────────────
+
+    async def aquery_stream(
+        self,
+        query: str,
+        *,
+        conversation_id: Optional[str] = None,
+        prompt: str = "default",
+        style: str = "concise",
+        web_search: bool = False,
+        sources: Optional[List[str]] = None,
+        teacher_mode: bool = False,
+        title: Optional[str] = None,
+    ) -> AsyncIterator[StreamEvent]:
+        """
+        Send a query via /query_stream and yield events as they arrive (async).
+
+        Yields StreamEvent objects with these event types:
+            - "text"         → response text chunk (use event.content)
+            - "thinking"     → CoT reasoning chunk
+            - "thinking_end" → end of reasoning phase
+            - "sources"      → docs, webs, links
+            - "metadata"     → conversation_id, confidence, timing, tokens
+            - "error"        → pipeline error
+            - "done"         → stream finished
+
+        Example:
+            async for event in client.aquery_stream("What is BGP?"):
+                if event.is_text:
+                    print(event.content, end="", flush=True)
+                elif event.event == "metadata":
+                    print(f"\\nConfidence: {event.data['confidence']}")
+        """
+        import json as _json
+
+        payload = {
+            "query": query,
+            "prompt": prompt,
+            "style": style,
+            "web_search": web_search,
+            "teacher_mode": teacher_mode,
+            "sources": sources or [],
+            "attached_files": [],
+            "attached_urls": [],
+        }
+        if conversation_id:
+            payload["conversation_id"] = conversation_id
+        if title:
+            payload["title"] = title
+
+        async with self._http.stream("POST", "/query_stream", json=payload) as resp:
+            if not resp.is_success:
+                # Leer body completo para error
+                await resp.aread()
+                self._handle_error(resp)
+
+            # Parser SSE manual (líneas "event:" y "data:")
+            current_event = "message"
+            current_data = ""
+
+            async for line in resp.aiter_lines():
+                line = line.rstrip("\n").rstrip("\r")
+
+                if line.startswith("event:"):
+                    current_event = line[6:].strip()
+                elif line.startswith("data:"):
+                    current_data = line[5:].strip()
+                elif line == "":
+                    # Línea vacía = fin del evento SSE
+                    if current_data:
+                        try:
+                            parsed = _json.loads(current_data)
+                        except _json.JSONDecodeError:
+                            parsed = {"raw": current_data}
+
+                        yield StreamEvent(event=current_event, data=parsed)
+
+                        if current_event == "done":
+                            return
+
+                    current_event = "message"
+                    current_data = ""
+
+    def query_stream(self, query: str, **kwargs):
+        """
+        Send a query via /query_stream and yield events (sync generator).
+
+        Same args as aquery_stream(). Runs the async iterator in a thread.
+
+        Example:
+            for event in client.query_stream("What is BGP?"):
+                if event.is_text:
+                    print(event.content, end="", flush=True)
+        """
+        import asyncio
+        import concurrent.futures
+        import queue
+
+        q = queue.Queue()
+        sentinel = object()
+
+        async def _consume():
+            try:
+                async for event in self.aquery_stream(query, **kwargs):
+                    q.put(event)
+            except Exception as e:
+                q.put(e)
+            finally:
+                q.put(sentinel)
+
+        def _run():
+            asyncio.run(_consume())
+
+        thread = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        thread.submit(_run)
+
+        try:
+            while True:
+                item = q.get()
+                if item is sentinel:
+                    break
+                if isinstance(item, Exception):
+                    raise item
+                yield item
+        finally:
+            thread.shutdown(wait=False)
