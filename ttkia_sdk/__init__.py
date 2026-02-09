@@ -40,5 +40,5 @@ __all__ = [
     "AuthenticationError",
     "RateLimitError",
     "NotFoundError",
-    StreamEvent, 
+    "StreamEvent", 
 ]

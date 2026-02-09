@@ -9,7 +9,7 @@ Authentication via API Key (X-API-Key) or Bearer JWT token.
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 import httpx
 
@@ -27,6 +27,7 @@ from ttkia_sdk.models import (
     TimingInfo,
     TokenUsage,
     TTKIAError,
+    StreamEvent,
 )
 
 
