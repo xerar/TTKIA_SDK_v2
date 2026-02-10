@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any, Dict, List, Optional
+from datetime import datetime, timezone
 
 import httpx
 
@@ -305,17 +306,17 @@ class TTKIAClient:
     # ──────────────────────────────────────────────────────────
 
     async def alist_conversations(self) -> List[ConversationSummary]:
-        resp = await self._http.get("/get_env")
+        resp = await self._http.post("/env")
         self._handle_error(resp)
         data = resp.json()
-        convs = data.get("conversations", [])
+        convs = data.get("user", {}).get("history_chat", {}).get("conversations", [])
         return [ConversationSummary(**c) for c in convs]
 
     def list_conversations(self) -> List[ConversationSummary]:
-        resp = self._http_sync.get("/get_env")
+        resp = self._http_sync.post("/env")
         self._handle_error(resp)
         data = resp.json()
-        convs = data.get("conversations", [])
+        convs = data.get("user", {}).get("history_chat", {}).get("conversations", [])
         return [ConversationSummary(**c) for c in convs]
 
     async def aget_conversation(self, conversation_id: str) -> Conversation:
@@ -372,13 +373,31 @@ class TTKIAClient:
         positive: bool,
         comment: str = "",
         inferred_environments: Optional[List[str]] = None,
+        query: str = "",
+        answer: str = "",
+        prompt: str = "default",
+        style: str = "concise",
+        teacher_mode: bool = False,
     ) -> FeedbackResult:
+        now = datetime.now(timezone.utc)
         payload = {
             "feedback": positive,
-            "conversation_id": conversation_id,
-            "message_id": message_id,
+            "conversation_id": conversation_id or "",
+            "message_id": message_id or "",
             "comment": comment,
             "inferred_environments": inferred_environments or [],
+            # Campos obligatorios del backend FeedbackMessage
+            "query": query,
+            "answer": answer,
+            "prompt": prompt,
+            "style": style,
+            "timestamp": now.isoformat(),
+            "username": "",                  # backend lo sobreescribe con el user del token
+            "teacher_mode": teacher_mode,
+            "attachments": {"files": [], "urls": []},
+            "client_timestamp": now.isoformat(),
+            "client_timezone": "UTC",
+            "client_info": {"client": "ttkia-sdk", "version": "2.3.0"},
         }
         resp = await self._http.post("/feedback", json=payload)
         self._handle_error(resp)
@@ -395,13 +414,30 @@ class TTKIAClient:
         positive: bool,
         comment: str = "",
         inferred_environments: Optional[List[str]] = None,
+        query: str = "",
+        answer: str = "",
+        prompt: str = "default",
+        style: str = "concise",
+        teacher_mode: bool = False,
     ) -> FeedbackResult:
+        now = datetime.now(timezone.utc)
         payload = {
             "feedback": positive,
-            "conversation_id": conversation_id,
-            "message_id": message_id,
+            "conversation_id": conversation_id or "",
+            "message_id": message_id or "",
             "comment": comment,
             "inferred_environments": inferred_environments or [],
+            "query": query,
+            "answer": answer,
+            "prompt": prompt,
+            "style": style,
+            "timestamp": now.isoformat(),
+            "username": "",
+            "teacher_mode": teacher_mode,
+            "attachments": {"files": [], "urls": []},
+            "client_timestamp": now.isoformat(),
+            "client_timezone": "UTC",
+            "client_info": {"client": "ttkia-sdk", "version": "2.3.0"},
         }
         resp = self._http_sync.post("/feedback", json=payload)
         self._handle_error(resp)
@@ -416,16 +452,14 @@ class TTKIAClient:
     # ──────────────────────────────────────────────────────────
 
     async def aget_environments(self) -> List[str]:
-        resp = await self._http.get("/get_env")
+        resp = await self._http.post("/get_env_list")
         self._handle_error(resp)
-        data = resp.json()
-        return data.get("environment", [])
+        return resp.json()
 
     def get_environments(self) -> List[str]:
-        resp = self._http_sync.get("/get_env")
+        resp = self._http_sync.post("/get_env_list")
         self._handle_error(resp)
-        data = resp.json()
-        return data.get("environment", [])
+        return resp.json()
 
     async def aget_prompts(self) -> List[Dict[str, Any]]:
         resp = await self._http.get("/get_prompts")

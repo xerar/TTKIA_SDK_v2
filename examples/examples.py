@@ -270,7 +270,11 @@ def example_feedback():
             message_id=response.message_id,
             positive=True,
             comment="Accurate and well-structured answer",
+            query=response.query,  
+            answer=response.text,   
         )
+
+
         print(f"✅ Feedback: {result.message}")
 
 
