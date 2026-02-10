@@ -1,4 +1,4 @@
-# TTKIA SDK v2.1
+# TTKIA SDK 
 
 SDK oficial de Python para **TTKIA** – Telefónica Tech Knowledge Intelligence Assistant.
 
@@ -352,6 +352,50 @@ except TTKIAError as e:
 | Timeout en respuestas | Consulta compleja o red lenta | `ttkia config --timeout 180` |
 | Error de SSL | Certificado autofirmado | `ttkia config --no-ssl` (solo entornos internos) |
 | `Maximum 5 active API Keys` | Has alcanzado el límite | Revoca alguna key antigua desde tu perfil |
+
+
+---
+
+## Ejemplos incluidos
+
+El repositorio incluye ejemplos de uso en la carpeta `examples/`.
+
+Estos ejemplos **no tienen credenciales hardcodeadas** y leen la configuración desde
+variables de entorno (opcionalmente desde un fichero `.env`).
+
+### Requisitos para ejecutar los ejemplos
+
+Instala el SDK junto con las dependencias de ejemplos:
+
+```bash
+pip install -e ".[examples]"
+```
+
+Esto instalará python-dotenv, usado únicamente por los ejemplos.
+
+Configuración mediante .env
+
+Crea un fichero .env en la raíz del proyecto:
+
+```
+TTKIA_BASE_URL=https://ttkia.tu-empresa.com
+TTKIA_API_KEY=ttkia_sk_...
+```
+
+También puedes usar variables de entorno directamente:
+
+```
+export TTKIA_BASE_URL=https://ttkia.tu-empresa.com
+export TTKIA_API_KEY=ttkia_sk_...
+```
+
+Ejecutar un ejemplo
+```
+python examples/example.py
+```
+
+ℹ️ El SDK no depende de python-dotenv.
+Solo los ejemplos y herramientas de desarrollo utilizan esta librería.
 
 ---
 

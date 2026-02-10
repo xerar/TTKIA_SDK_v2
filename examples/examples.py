@@ -11,6 +11,8 @@ import json
 import time
 from datetime import datetime
 from pathlib import Path
+from dotenv import load_dotenv
+import os
 
 from ttkia_sdk import (
     TTKIAClient,
@@ -23,10 +25,17 @@ from ttkia_sdk import (
 # ══════════════════════════════════════════════════════════
 # CONFIGURATION – Change these values
 # ══════════════════════════════════════════════════════════
+# Carga variables desde .env
+load_dotenv()
 
-BASE_URL = "https://ttkia-dev.duckdns.org"
-API_KEY = "ttkia_sk_f29abe9d2df990ad7834a668a0f7a798dc080316fc69344a5eff0e0cafb30948"
+BASE_URL = os.getenv("TTKIA_BASE_URL")
+API_KEY = os.getenv("TTKIA_API_KEY")
 
+if not BASE_URL or not API_KEY:
+    raise RuntimeError(
+        "Missing TTKIA_BASE_URL or TTKIA_API_KEY. "
+        "Define them in .env or environment variables."
+    )
 
 # ─────────────────────────────────────────────────────────
 # 1. SIMPLE QUERY
@@ -334,7 +343,7 @@ if __name__ == "__main__":
     print("=" * 70)
 
     # ── Sync examples ──
-    # example_simple_query()
+    example_simple_query()
     # example_conversation()
     # example_chain_of_thought()
     # example_web_search()
@@ -344,4 +353,4 @@ if __name__ == "__main__":
     # example_explore()
 
     # ── Async example ──
-    asyncio.run(example_batch_queries())
+    # asyncio.run(example_batch_queries())
