@@ -450,16 +450,20 @@ class TTKIAClient:
     # ──────────────────────────────────────────────────────────
     # SOURCES & ENVIRONMENTS
     # ──────────────────────────────────────────────────────────
-
     async def aget_environments(self) -> List[str]:
-        resp = await self._http.post("/get_env_list")
+        resp = await self._http.post("/env")
         self._handle_error(resp)
-        return resp.json()
+        data = resp.json()
+        # /env devuelve el user object con environments
+        user = data.get("user", data)
+        return user.get("environments", [])
 
     def get_environments(self) -> List[str]:
-        resp = self._http_sync.post("/get_env_list")
+        resp = self._http_sync.post("/env")
         self._handle_error(resp)
-        return resp.json()
+        data = resp.json()
+        user = data.get("user", data)
+        return user.get("environments", [])
 
     async def aget_prompts(self) -> List[Dict[str, Any]]:
         resp = await self._http.get("/get_prompts")
