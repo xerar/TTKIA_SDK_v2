@@ -6,14 +6,14 @@ Usage:
 
     client = TTKIAClient(
         base_url="https://ttkia.example.com",
-        api_key="ttkia_pk_..."
+        api_key="ttkia_sk_..."
     )
 
     response = client.query("How do I configure a Fortinet VPN?")
     print(response.text)
 """
 
-__version__ = "2.1.0"
+__version__ = "2.3.0"
 
 from ttkia_sdk.client import TTKIAClient
 from ttkia_sdk.models import (
@@ -21,12 +21,12 @@ from ttkia_sdk.models import (
     Conversation,
     ConversationMessage,
     Source,
+    StreamEvent,
     HealthStatus,
     TTKIAError,
     AuthenticationError,
     RateLimitError,
     NotFoundError,
-    StreamEvent, 
 )
 
 __all__ = [
@@ -35,10 +35,10 @@ __all__ = [
     "Conversation",
     "ConversationMessage",
     "Source",
+    "StreamEvent",
     "HealthStatus",
     "TTKIAError",
     "AuthenticationError",
     "RateLimitError",
     "NotFoundError",
-    "StreamEvent", 
 ]

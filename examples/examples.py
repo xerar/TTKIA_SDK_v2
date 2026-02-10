@@ -25,7 +25,7 @@ from ttkia_sdk import (
 # ══════════════════════════════════════════════════════════
 
 BASE_URL = "https://ttkia-dev.duckdns.org"
-API_KEY = "ttkia_sk_2daa5a9df4ea48f53eb50d95e0e5d8506175ce48b9c44fcb7e6d0fe43ca7fd42"
+API_KEY = "ttkia_sk_f29abe9d2df990ad7834a668a0f7a798dc080316fc69344a5eff0e0cafb30948"
 
 
 # ─────────────────────────────────────────────────────────

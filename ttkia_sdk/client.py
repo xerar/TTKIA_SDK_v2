@@ -9,7 +9,8 @@ Authentication via API Key (X-API-Key) or Bearer JWT token.
 from __future__ import annotations
 
 import asyncio
-from typing import Any, AsyncIterator, Dict, List, Optional
+import json as _json
+from typing import Any, AsyncIterator, Dict, Iterator, List, Optional
 
 import httpx
 
@@ -24,10 +25,10 @@ from ttkia_sdk.models import (
     QueryResponse,
     RateLimitError,
     Source,
+    StreamEvent,
     TimingInfo,
     TokenUsage,
     TTKIAError,
-    StreamEvent,
 )
 
 
@@ -63,9 +64,10 @@ class TTKIAClient:
         response = client.query("How do I configure a Fortinet VPN?")
         print(response.text)
 
-        # With App Token (current system)
-        client = TTKIAClient("https://ttkia.example.com", bearer_token="eyJhbG...")
-        response = client.query("Explain SDWAN architecture")
+        # Streaming chat
+        for event in client.query_stream("Explain SDWAN architecture"):
+            if event.is_text:
+                print(event.content, end="", flush=True)
 
         # Conversation continuity
         r1 = client.query("What is BGP?")
@@ -80,19 +82,6 @@ class TTKIAClient:
         timeout: float = _DEFAULT_TIMEOUT,
         verify_ssl: bool = True,
     ):
-        """
-        Initialize the TTKIA client.
-
-        Args:
-            base_url: TTKIA server URL (e.g. ``https://ttkia.example.com``).
-            api_key: API key starting with ``ttkia_sk_``. Future auth method.
-            bearer_token: App Token or JWT. Current auth method.
-            timeout: Request timeout in seconds (default 120).
-            verify_ssl: Verify SSL certificates (default True).
-
-        Raises:
-            ValueError: If neither api_key nor bearer_token is provided.
-        """
         if not api_key and not bearer_token:
             raise ValueError("Provide either api_key or bearer_token")
 
@@ -100,6 +89,7 @@ class TTKIAClient:
         self._api_key = api_key
         self._bearer_token = bearer_token
         self._timeout = timeout
+        self._verify_ssl = verify_ssl
 
         # Build headers (non-auth)
         headers = {"Content-Type": "application/json"}
@@ -113,6 +103,7 @@ class TTKIAClient:
         if bearer_token:
             auth = _BearerAuth(bearer_token)
 
+        # Async client – used by aquery, ahealth, etc.
         self._http = httpx.AsyncClient(
             base_url=self.base_url,
             headers=headers,
@@ -121,6 +112,28 @@ class TTKIAClient:
             verify=verify_ssl,
             follow_redirects=True,
         )
+
+        # Sync client – created lazily for query_stream
+        self._sync_http: Optional[httpx.Client] = None
+        self._sync_headers = headers.copy()
+        self._sync_auth_header: Optional[str] = None
+        if bearer_token:
+            self._sync_auth_header = f"Bearer {bearer_token}"
+
+    def _get_sync_http(self) -> httpx.Client:
+        """Lazily create a sync httpx.Client for streaming."""
+        if self._sync_http is None:
+            headers = self._sync_headers.copy()
+            if self._sync_auth_header:
+                headers["Authorization"] = self._sync_auth_header
+            self._sync_http = httpx.Client(
+                base_url=self.base_url,
+                headers=headers,
+                timeout=self._timeout,
+                verify=self._verify_ssl,
+                follow_redirects=True,
+            )
+        return self._sync_http
 
     # ──────────────────────────────────────────────────────────
     # LIFECYCLE
@@ -131,10 +144,21 @@ class TTKIAClient:
         try:
             await self._http.aclose()
         except Exception:
-            pass  # Best-effort cleanup
+            pass
+        if self._sync_http:
+            try:
+                self._sync_http.close()
+            except Exception:
+                pass
 
     def close(self):
         """Close the underlying HTTP client (sync)."""
+        if self._sync_http:
+            try:
+                self._sync_http.close()
+            except Exception:
+                pass
+            self._sync_http = None
         try:
             try:
                 loop = asyncio.get_running_loop()
@@ -144,13 +168,12 @@ class TTKIAClient:
             if loop and loop.is_running():
                 loop.create_task(self._http.aclose())
             else:
-                # No running loop — create one just for cleanup
                 try:
                     asyncio.run(self._http.aclose())
                 except RuntimeError:
                     pass
         except Exception:
-            pass  # Best-effort cleanup
+            pass
 
     async def __aenter__(self):
         return self
@@ -259,11 +282,6 @@ class TTKIAClient:
 
         Returns:
             QueryResponse with the full answer, sources, and metadata.
-
-        Raises:
-            AuthenticationError: Invalid or expired token.
-            RateLimitError: Too many requests.
-            TTKIAError: Any other server error.
         """
         payload = {
             "query": query,
@@ -315,6 +333,162 @@ class TTKIAClient:
     def query(self, query: str, **kwargs) -> QueryResponse:
         """Send a query and get the complete response (sync). See ``aquery`` for args."""
         return self._sync(self.aquery(query, **kwargs))
+
+    # ──────────────────────────────────────────────────────────
+    # STREAMING QUERY (via /query_stream SSE)
+    # ──────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _build_stream_payload(
+        query: str,
+        conversation_id: Optional[str] = None,
+        prompt: str = "default",
+        style: str = "concise",
+        web_search: bool = False,
+        sources: Optional[List[str]] = None,
+        teacher_mode: bool = False,
+        title: Optional[str] = None,
+    ) -> dict:
+        """Build the JSON payload for /query_stream."""
+        payload = {
+            "query": query,
+            "prompt": prompt,
+            "style": style,
+            "web_search": web_search,
+            "teacher_mode": teacher_mode,
+            "sources": sources or [],
+            "attached_files": [],
+            "attached_urls": [],
+        }
+        if conversation_id:
+            payload["conversation_id"] = conversation_id
+        if title:
+            payload["title"] = title
+        return payload
+
+    @staticmethod
+    def _parse_sse_event(current_event: str, current_data: str) -> Optional[StreamEvent]:
+        """Parse a single SSE event into a StreamEvent."""
+        if not current_data:
+            return None
+        try:
+            parsed = _json.loads(current_data)
+        except _json.JSONDecodeError:
+            parsed = {"raw": current_data}
+        return StreamEvent(event=current_event, data=parsed)
+
+    async def aquery_stream(
+        self,
+        query: str,
+        *,
+        conversation_id: Optional[str] = None,
+        prompt: str = "default",
+        style: str = "concise",
+        web_search: bool = False,
+        sources: Optional[List[str]] = None,
+        teacher_mode: bool = False,
+        title: Optional[str] = None,
+    ) -> AsyncIterator[StreamEvent]:
+        """
+        Send a query via /query_stream and yield events as they arrive (async).
+
+        Yields StreamEvent objects with event types:
+            - "text"         → response text chunk (use event.content)
+            - "thinking"     → CoT reasoning chunk
+            - "thinking_end" → end of reasoning phase
+            - "sources"      → docs, webs, links
+            - "metadata"     → conversation_id, confidence, timing, tokens
+            - "error"        → pipeline error
+            - "done"         → stream finished
+
+        Example:
+            async for event in client.aquery_stream("What is BGP?"):
+                if event.is_text:
+                    print(event.content, end="", flush=True)
+        """
+        payload = self._build_stream_payload(
+            query, conversation_id=conversation_id, prompt=prompt,
+            style=style, web_search=web_search, sources=sources,
+            teacher_mode=teacher_mode, title=title,
+        )
+
+        async with self._http.stream("POST", "/query_stream", json=payload) as resp:
+            if not resp.is_success:
+                await resp.aread()
+                self._handle_error(resp)
+
+            current_event = "message"
+            current_data = ""
+
+            async for line in resp.aiter_lines():
+                line = line.rstrip("\n").rstrip("\r")
+
+                if line.startswith("event:"):
+                    current_event = line[6:].strip()
+                elif line.startswith("data:"):
+                    current_data = line[5:].strip()
+                elif line == "":
+                    evt = self._parse_sse_event(current_event, current_data)
+                    if evt:
+                        yield evt
+                        if current_event == "done":
+                            return
+                    current_event = "message"
+                    current_data = ""
+
+    def query_stream(
+        self,
+        query: str,
+        *,
+        conversation_id: Optional[str] = None,
+        prompt: str = "default",
+        style: str = "concise",
+        web_search: bool = False,
+        sources: Optional[List[str]] = None,
+        teacher_mode: bool = False,
+        title: Optional[str] = None,
+    ) -> Iterator[StreamEvent]:
+        """
+        Send a query via /query_stream and yield events (sync generator).
+
+        Uses a dedicated sync httpx.Client — no event loop issues.
+
+        Example:
+            for event in client.query_stream("What is BGP?"):
+                if event.is_text:
+                    print(event.content, end="", flush=True)
+        """
+        payload = self._build_stream_payload(
+            query, conversation_id=conversation_id, prompt=prompt,
+            style=style, web_search=web_search, sources=sources,
+            teacher_mode=teacher_mode, title=title,
+        )
+
+        client = self._get_sync_http()
+
+        with client.stream("POST", "/query_stream", json=payload) as resp:
+            if not resp.is_success:
+                resp.read()
+                self._handle_error(resp)
+
+            current_event = "message"
+            current_data = ""
+
+            for line in resp.iter_lines():
+                line = line.rstrip("\n").rstrip("\r")
+
+                if line.startswith("event:"):
+                    current_event = line[6:].strip()
+                elif line.startswith("data:"):
+                    current_data = line[5:].strip()
+                elif line == "":
+                    evt = self._parse_sse_event(current_event, current_data)
+                    if evt:
+                        yield evt
+                        if current_event == "done":
+                            return
+                    current_event = "message"
+                    current_data = ""
 
     # ──────────────────────────────────────────────────────────
     # CONVERSATIONS
@@ -444,16 +618,7 @@ class TTKIAClient:
     async def aexport_conversation(
         self, conversation_id: str, output_path: str
     ) -> str:
-        """
-        Export a conversation as a ZIP file (async).
-
-        Args:
-            conversation_id: Conversation to export.
-            output_path: Path to save the ZIP file.
-
-        Returns:
-            The output_path where the file was saved.
-        """
+        """Export a conversation as a ZIP file (async)."""
         resp = await self._http.get(
             f"/export-conversation/{conversation_id}",
             follow_redirects=True,
@@ -476,132 +641,3 @@ class TTKIAClient:
     def __repr__(self) -> str:
         auth = "api_key" if self._api_key else "bearer"
         return f"TTKIAClient(base_url={self.base_url!r}, auth={auth})"
-
-    # ──────────────────────────────────────────────────────────
-    # STREAMING QUERY (via /query_stream SSE)
-    # ──────────────────────────────────────────────────────────
-
-    async def aquery_stream(
-        self,
-        query: str,
-        *,
-        conversation_id: Optional[str] = None,
-        prompt: str = "default",
-        style: str = "concise",
-        web_search: bool = False,
-        sources: Optional[List[str]] = None,
-        teacher_mode: bool = False,
-        title: Optional[str] = None,
-    ) -> AsyncIterator[StreamEvent]:
-        """
-        Send a query via /query_stream and yield events as they arrive (async).
-
-        Yields StreamEvent objects with these event types:
-            - "text"         → response text chunk (use event.content)
-            - "thinking"     → CoT reasoning chunk
-            - "thinking_end" → end of reasoning phase
-            - "sources"      → docs, webs, links
-            - "metadata"     → conversation_id, confidence, timing, tokens
-            - "error"        → pipeline error
-            - "done"         → stream finished
-
-        Example:
-            async for event in client.aquery_stream("What is BGP?"):
-                if event.is_text:
-                    print(event.content, end="", flush=True)
-                elif event.event == "metadata":
-                    print(f"\\nConfidence: {event.data['confidence']}")
-        """
-        import json as _json
-
-        payload = {
-            "query": query,
-            "prompt": prompt,
-            "style": style,
-            "web_search": web_search,
-            "teacher_mode": teacher_mode,
-            "sources": sources or [],
-            "attached_files": [],
-            "attached_urls": [],
-        }
-        if conversation_id:
-            payload["conversation_id"] = conversation_id
-        if title:
-            payload["title"] = title
-
-        async with self._http.stream("POST", "/query_stream", json=payload) as resp:
-            if not resp.is_success:
-                # Leer body completo para error
-                await resp.aread()
-                self._handle_error(resp)
-
-            # Parser SSE manual (líneas "event:" y "data:")
-            current_event = "message"
-            current_data = ""
-
-            async for line in resp.aiter_lines():
-                line = line.rstrip("\n").rstrip("\r")
-
-                if line.startswith("event:"):
-                    current_event = line[6:].strip()
-                elif line.startswith("data:"):
-                    current_data = line[5:].strip()
-                elif line == "":
-                    # Línea vacía = fin del evento SSE
-                    if current_data:
-                        try:
-                            parsed = _json.loads(current_data)
-                        except _json.JSONDecodeError:
-                            parsed = {"raw": current_data}
-
-                        yield StreamEvent(event=current_event, data=parsed)
-
-                        if current_event == "done":
-                            return
-
-                    current_event = "message"
-                    current_data = ""
-
-    def query_stream(self, query: str, **kwargs):
-        """
-        Send a query via /query_stream and yield events (sync generator).
-
-        Same args as aquery_stream(). Runs the async iterator in a thread.
-
-        Example:
-            for event in client.query_stream("What is BGP?"):
-                if event.is_text:
-                    print(event.content, end="", flush=True)
-        """
-        import asyncio
-        import concurrent.futures
-        import queue
-
-        q = queue.Queue()
-        sentinel = object()
-
-        async def _consume():
-            try:
-                async for event in self.aquery_stream(query, **kwargs):
-                    q.put(event)
-            except Exception as e:
-                q.put(e)
-            finally:
-                q.put(sentinel)
-
-        def _run():
-            asyncio.run(_consume())
-
-        thread = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        thread.submit(_run)
-
-        try:
-            while True:
-                item = q.get()
-                if item is sentinel:
-                    break
-                if isinstance(item, Exception):
-                    raise item
-                yield item
-        finally:
-            thread.shutdown(wait=False)
