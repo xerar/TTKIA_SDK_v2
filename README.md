@@ -14,20 +14,23 @@ Permite consultar la base de conocimiento de TTKIA, mantener conversaciones, obt
 ## Instalación
 
 El SDK se instala directamente desde el repositorio de GitHub:
+
 ```bash
 # 1. Clona el repositorio
 git clone https://github.com/xerar/TTKIA_SDK_v2.git
-cd TTKIA_SDK
+cd TTKIA_SDK_v2
 
 # 2. Crea un entorno virtual
 python -m venv .venv
 source .venv/bin/activate   # Linux/macOS
+# En Windows: .venv\Scripts\activate
 
 # 3. Instala el SDK en modo editable
 pip install -e .
 ```
 
 Para incluir también las dependencias de los ejemplos:
+
 ```bash
 pip install -e ".[examples]"
 ```
@@ -112,61 +115,19 @@ Al instalar el SDK se registra el comando `ttkia` en tu terminal.
 ttkia ask "¿Cómo configuro una VPN site-to-site en Fortinet?"
 ```
 
-Con opciones adicionales:
-
-```bash
-ttkia ask "Explica SDWAN" --style detailed --cot --sources
-```
-
-| Flag | Descripción |
-|------|-------------|
-| `--style` | Estilo de respuesta: `concise` (por defecto), `detailed`, etc. |
-| `--prompt` | Plantilla de prompt: `default`, `expert`, etc. |
-| `--web` | Habilita búsqueda web complementaria |
-| `--cot` | Habilita Chain of Thought (razonamiento paso a paso) |
-| `--sources` | Muestra los documentos fuente usados en la respuesta |
-| `--json` | Salida en formato JSON |
-| `-c ID` | Continúa una conversación existente |
-
-### Chat interactivo
+### Modo conversación interactivo
 
 ```bash
 ttkia chat
 ```
 
-Dentro del chat dispones de estos comandos:
-
-| Comando | Acción |
-|---------|--------|
-| `/quit` | Salir del chat |
-| `/new` | Iniciar nueva conversación |
-| `/export` | Exportar la conversación como ZIP |
-| `/sources` | Activar/desactivar visualización de fuentes |
-| `/web` | Activar/desactivar búsqueda web |
-| `/id` | Mostrar el ID de la conversación actual |
-| `/help` | Ver todos los comandos disponibles |
-
 ### Otros comandos útiles
 
 ```bash
-ttkia health              # Verificar estado del servicio
-ttkia envs                # Listar entornos de conocimiento disponibles
-ttkia prompts             # Listar plantillas de prompt
-ttkia styles              # Listar estilos de respuesta
-ttkia history             # Ver conversaciones recientes
-ttkia export <ID>         # Exportar una conversación como ZIP
-```
-
-### Referencia completa de `ttkia config`
-
-```bash
-ttkia config --url URL           # URL del servidor TTKIA
-ttkia config --api-key KEY       # API Key (ttkia_sk_...)
-ttkia config --token TOKEN       # App Token legacy (Bearer JWT)
-ttkia config --timeout 180       # Timeout en segundos (por defecto: 120)
-ttkia config --no-ssl            # Desactivar verificación SSL
-ttkia config --ssl               # Reactivar verificación SSL
-ttkia config                     # Mostrar configuración actual
+ttkia health          # Estado del servidor
+ttkia envs            # Listar entornos disponibles
+ttkia history         # Ver historial de conversaciones
+ttkia config --help   # Opciones de configuración
 ```
 
 ---
@@ -180,10 +141,10 @@ from ttkia_sdk import TTKIAClient
 
 client = TTKIAClient(
     base_url="https://ttkia.tu-empresa.com",
-    api_key="ttkia_sk_a1b2c3d4...",
+    api_key="ttkia_sk_..."
 )
 
-response = client.query("¿Cómo configuro una VPN site-to-site en Fortinet?")
+response = client.query("¿Qué es OSPF?")
 print(response.text)
 print(f"Confianza: {response.confidence:.0%}")
 print(f"Fuentes: {len(response.sources)}")
@@ -202,9 +163,10 @@ with TTKIAClient(base_url="...", api_key="ttkia_sk_...") as client:
 ### Continuidad de conversación
 
 ```python
-r1 = client.query("¿Qué es BGP?")
-r2 = client.query("¿En qué se diferencia de OSPF?", conversation_id=r1.conversation_id)
-r3 = client.query("¿Cuál es mejor para mi DC?", conversation_id=r1.conversation_id)
+with TTKIAClient(base_url="...", api_key="ttkia_sk_...") as client:
+    r1 = client.query("¿Qué es BGP?")
+    r2 = client.query("¿En qué se diferencia de OSPF?", conversation_id=r1.conversation_id)
+    r3 = client.query("¿Cuál es mejor para mi DC?", conversation_id=r1.conversation_id)
 ```
 
 ### Opciones de consulta
@@ -317,25 +279,6 @@ response.thinking_process      # Lista de pasos del razonamiento
 
 ---
 
-## Gestión de errores
-
-```python
-from ttkia_sdk import TTKIAError, AuthenticationError, RateLimitError
-import time
-
-try:
-    response = client.query("...")
-except AuthenticationError:
-    print("API Key inválida, expirada o revocada – genera una nueva desde tu perfil en TTKIA")
-except RateLimitError as e:
-    print(f"Límite de peticiones alcanzado. Reintenta en {e.retry_after}s")
-    time.sleep(e.retry_after)
-except TTKIAError as e:
-    print(f"Error [{e.status_code}]: {e.message}")
-```
-
----
-
 ## Métodos disponibles
 
 | Método | Async | Descripción |
@@ -354,6 +297,25 @@ except TTKIAError as e:
 
 ---
 
+## Gestión de errores
+
+```python
+from ttkia_sdk import TTKIAClient, TTKIAError, AuthenticationError, RateLimitError
+import time
+
+try:
+    response = client.query("...")
+except AuthenticationError:
+    print("API Key inválida, expirada o revocada – genera una nueva desde tu perfil en TTKIA")
+except RateLimitError as e:
+    print(f"Límite de peticiones alcanzado. Reintenta en {e.retry_after}s")
+    time.sleep(e.retry_after)
+except TTKIAError as e:
+    print(f"Error [{e.status_code}]: {e.message}")
+```
+
+---
+
 ## Resolución de problemas
 
 | Problema | Causa probable | Solución |
@@ -365,7 +327,6 @@ except TTKIAError as e:
 | Timeout en respuestas | Consulta compleja o red lenta | `ttkia config --timeout 180` |
 | Error de SSL | Certificado autofirmado | `ttkia config --no-ssl` (solo entornos internos) |
 | `Maximum 5 active API Keys` | Has alcanzado el límite | Revoca alguna key antigua desde tu perfil |
-
 
 ---
 
@@ -386,29 +347,38 @@ pip install -e ".[examples]"
 
 Esto instalará python-dotenv, usado únicamente por los ejemplos.
 
-Configuración mediante .env
+### Configuración mediante .env
 
-Crea un fichero .env en la raíz del proyecto:
+Crea un fichero `.env` en la carpeta `examples/`:
 
 ```
-TTKIA_BASE_URL=https://ttkia.tu-empresa.com
+TTKIA_URL=https://ttkia.tu-empresa.com
 TTKIA_API_KEY=ttkia_sk_...
 ```
 
 También puedes usar variables de entorno directamente:
 
-```
-export TTKIA_BASE_URL=https://ttkia.tu-empresa.com
+```bash
+export TTKIA_URL=https://ttkia.tu-empresa.com
 export TTKIA_API_KEY=ttkia_sk_...
 ```
 
-Ejecutar un ejemplo
-```
-python examples/example.py
+### Ejecutar un ejemplo
+
+```bash
+# Ejemplo básico (por defecto)
+python examples/examples.py
+
+# Seleccionar un ejemplo concreto
+TTKIA_EXAMPLE=conv python examples/examples.py
+TTKIA_EXAMPLE=batch python examples/examples.py
+TTKIA_EXAMPLE=feedback python examples/examples.py
 ```
 
-ℹ️ El SDK no depende de python-dotenv.
-Solo los ejemplos y herramientas de desarrollo utilizan esta librería.
+Ejemplos disponibles: `simple`, `conv`, `cot`, `web`, `errors`, `batch`, `incident`, `feedback`, `explore`.
+
+> ℹ️ El SDK no depende de python-dotenv.
+> Solo los ejemplos y herramientas de desarrollo utilizan esta librería.
 
 ---
 
@@ -416,7 +386,7 @@ Solo los ejemplos y herramientas de desarrollo utilizan esta librería.
 
 ```bash
 git clone https://github.com/xerar/TTKIA_SDK_v2.git
-cd TTKIA_SDK
+cd TTKIA_SDK_v2
 pip install -e ".[dev]"
 pytest tests/ -v
 ```
