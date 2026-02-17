@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ttkia-sdk"
-version = "2.1.0"
+version = "2.3.0"
 description = "Official Python SDK for TTKIA – Telefónica Tech Knowledge Intelligence Assistant"
 readme = "README.md"
 license = {text = "MIT"}
@@ -42,8 +42,8 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/xerar/TTKIA_SDK"
-Documentation = "https://github.com/xerar/TTKIA_SDK#readme"
+Homepage = "https://github.com/xerar/TTKIA_SDK_v2"
+Documentation = "https://github.com/xerar/TTKIA_SDK_v2#readme"
 
 [project.scripts]
 ttkia = "ttkia_sdk.cli:main"

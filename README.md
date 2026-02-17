@@ -13,11 +13,24 @@ Permite consultar la base de conocimiento de TTKIA, mantener conversaciones, obt
 
 ## Instalación
 
+El SDK se instala directamente desde el repositorio de GitHub:
 ```bash
-pip install ttkia-sdk
+# 1. Clona el repositorio
+git clone https://github.com/xerar/TTKIA_SDK.git
+cd TTKIA_SDK
+
+# 2. Crea un entorno virtual
+python -m venv .venv
+source .venv/bin/activate   # Linux/macOS
+
+# 3. Instala el SDK en modo editable
+pip install -e .
 ```
 
-> Si trabajas en un entorno sin acceso a PyPI, pide el paquete `.whl` a tu administrador e instálalo con `pip install ttkia_sdk-2.1.0-py3-none-any.whl`.
+Para incluir también las dependencias de los ejemplos:
+```bash
+pip install -e ".[examples]"
+```
 
 ---
 
