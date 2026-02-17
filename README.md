@@ -16,7 +16,7 @@ Permite consultar la base de conocimiento de TTKIA, mantener conversaciones, obt
 El SDK se instala directamente desde el repositorio de GitHub:
 ```bash
 # 1. Clona el repositorio
-git clone https://github.com/xerar/TTKIA_SDK.git
+git clone https://github.com/xerar/TTKIA_SDK_v2.git
 cd TTKIA_SDK
 
 # 2. Crea un entorno virtual
@@ -415,7 +415,7 @@ Solo los ejemplos y herramientas de desarrollo utilizan esta librería.
 ## Desarrollo
 
 ```bash
-git clone https://github.com/xerar/TTKIA_SDK.git
+git clone https://github.com/xerar/TTKIA_SDK_v2.git
 cd TTKIA_SDK
 pip install -e ".[dev]"
 pytest tests/ -v
