@@ -44,35 +44,18 @@ def _save_config(config: dict):
 
 
 def _get_client() -> TTKIAClient:
-    """Build a TTKIAClient from config file or environment variables."""
-    config = _load_config()
-
-    url = os.environ.get("TTKIA_URL") or config.get("url")
-    token = os.environ.get("TTKIA_TOKEN") or config.get("token")
-    api_key = os.environ.get("TTKIA_API_KEY") or config.get("api_key")
-
-    if not url:
-        print("❌ No TTKIA URL configured.")
+    """Build a TTKIAClient from config file or environment variables.
+    
+    Uses TTKIAClient's built-in config resolution:
+    explicit args > env vars > ~/.ttkia/config.json
+    """
+    try:
+        return TTKIAClient()
+    except TTKIAError as e:
+        print(f"❌ {e.message}")
         print("   Run: ttkia config --url https://your-ttkia-server.com --api-key ttkia_sk_...")
         print("   Or set: export TTKIA_URL=... and export TTKIA_API_KEY=...")
         sys.exit(1)
-
-    if not token and not api_key:
-        print("❌ No authentication configured.")
-        print("   Run: ttkia config --url URL --api-key ttkia_sk_...")
-        print("   Or generate an API Key from your TTKIA profile.")
-        sys.exit(1)
-
-    verify_ssl = config.get("verify_ssl", True)
-    timeout = config.get("timeout", 120)
-
-    return TTKIAClient(
-        base_url=url,
-        bearer_token=token,
-        api_key=api_key,
-        timeout=timeout,
-        verify_ssl=verify_ssl,
-    )
 
 
 # ═══════════════════════════════════════════════════════════
@@ -90,7 +73,32 @@ class _C:
     CYAN = "\033[36m" if _enabled else ""
     RED = "\033[31m" if _enabled else ""
     MAGENTA = "\033[35m" if _enabled else ""
+    BLUE = "\033[34m" if _enabled else ""
     RESET = "\033[0m" if _enabled else ""
+
+
+# ═══════════════════════════════════════════════════════════
+# HELPERS
+# ═══════════════════════════════════════════════════════════
+
+def _print_mcp_tools(response):
+    """Print MCP tool information if tools were used."""
+    if not response.used_mcp:
+        return
+    print(f"\n{_C.DIM}  🔧 MCP Tools used:{_C.RESET}")
+    for t in response.mcp_tools:
+        icon = "✅" if t.is_success else "❌"
+        args_str = ", ".join(f"{k}={v}" for k, v in t.args.items()) if t.args else ""
+        print(f"    {icon} {_C.CYAN}{t.name}{_C.RESET}({args_str})")
+
+
+def _print_follow_ups(response):
+    """Print suggested follow-up questions."""
+    if not response.follow_ups:
+        return
+    print(f"\n{_C.DIM}  💡 Follow-ups:{_C.RESET}")
+    for i, q in enumerate(response.follow_ups, 1):
+        print(f"    {_C.DIM}{i}. {q}{_C.RESET}")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -131,6 +139,8 @@ def cmd_config(args):
         api_key_val = config.get('api_key', '')
         if api_key_val:
             print(f"  API Key: {api_key_val[:16]}...")
+        else:
+            print(f"  API Key: (not set)")
         print(f"  Timeout: {config.get('timeout', 120)}s")
         print(f"  SSL:     {config.get('verify_ssl', True)}")
     else:
@@ -180,12 +190,23 @@ def cmd_ask(args):
             conf = response.confidence or 0
             conf_color = _C.GREEN if conf >= 0.7 else _C.YELLOW if conf >= 0.4 else _C.RED
 
+            meta_parts = [
+                f"Confidence: {conf_color}{conf:.0%}{_C.DIM}",
+                f"Sources: {len(response.docs)}d/{len(response.webs)}w",
+                f"Tokens: {response.token_usage.total}",
+                f"Time: {elapsed:.1f}s",
+            ]
+            if response.used_mcp:
+                ok = sum(1 for t in response.mcp_tools if t.is_success)
+                meta_parts.insert(1, f"MCP: {ok}/{len(response.mcp_tools)} tools")
+
             print(f"{_C.DIM}{'─' * 60}")
-            print(f"  Confidence: {conf_color}{conf:.0%}{_C.DIM}"
-                  f"  │  Sources: {len(response.docs)}d/{len(response.webs)}w"
-                  f"  │  Tokens: {response.token_usage.total}"
-                  f"  │  Time: {elapsed:.1f}s")
+            print(f"  {'  │  '.join(meta_parts)}")
             print(f"  Conversation: {response.conversation_id}{_C.RESET}")
+
+            # MCP tools detail
+            if args.tools and response.used_mcp:
+                _print_mcp_tools(response)
 
             # Sources
             if args.sources and response.sources:
@@ -200,6 +221,9 @@ def cmd_ask(args):
                 for step in response.thinking_process:
                     print(f"    💭 {step[:120]}")
 
+            # Follow-ups
+            _print_follow_ups(response)
+
             # JSON output
             if args.json:
                 print(f"\n{_C.DIM}─── JSON ───{_C.RESET}")
@@ -212,17 +236,19 @@ def cmd_ask(args):
                     "tokens": {"input": response.token_usage.input_tokens, "output": response.token_usage.output_tokens},
                     "timing": response.timing.summary(),
                     "sources": [{"title": s.title, "source": s.source, "web": s.is_web} for s in response.sources],
+                    "mcp_tools": [{"name": t.name, "status": t.status, "args": t.args} for t in response.mcp_tools],
+                    "follow_ups": response.follow_ups,
                 }
                 print(json.dumps(out, indent=2, ensure_ascii=False))
 
         except AuthenticationError:
-            print(f"{_C.RED}❌ Authentication failed. Check your config with: ttkia config{_C.RESET}")
+            print(f"{_C.RED}❌ Authentication failed. Run: ttkia config --api-key ...{_C.RESET}")
             sys.exit(1)
         except RateLimitError as e:
             print(f"{_C.YELLOW}⏳ Rate limited. Retry in {e.retry_after}s{_C.RESET}")
             sys.exit(1)
         except TTKIAError as e:
-            print(f"{_C.RED}❌ Error [{e.status_code}]: {e.message}{_C.RESET}")
+            print(f"{_C.RED}❌ [{e.status_code}] {e.message}{_C.RESET}")
             sys.exit(1)
 
 
@@ -231,61 +257,64 @@ def cmd_chat(args):
     client = _get_client()
     conversation_id = args.conversation
 
-    print(f"{_C.BOLD}💬 TTKIA Interactive Chat{_C.RESET}")
-    print(f"{_C.DIM}   Style: {args.style} │ Prompt: {args.prompt}")
-    print(f"   Commands: /quit  /new  /export  /sources  /web  /id  /help{_C.RESET}")
+    print(f"{_C.BOLD}TTKIA Interactive Chat{_C.RESET}")
+    print(f"{_C.DIM}Type /quit to exit, /help for commands{_C.RESET}")
+    if conversation_id:
+        print(f"{_C.DIM}Continuing conversation: {conversation_id[:8]}{_C.RESET}")
     print()
 
     try:
         while True:
             try:
-                user_input = input(f"{_C.CYAN}You:{_C.RESET} ").strip()
-            except (KeyboardInterrupt, EOFError):
+                user_input = input(f"{_C.GREEN}You:{_C.RESET} ").strip()
+            except (EOFError, KeyboardInterrupt):
                 break
 
             if not user_input:
                 continue
 
-            # ── Slash commands ──
+            # ── Commands ──
             if user_input.startswith("/"):
                 cmd = user_input.lower().split()[0]
                 if cmd in ("/quit", "/exit", "/q"):
                     break
+                elif cmd == "/help":
+                    print(f"""
+{_C.BOLD}Commands:{_C.RESET}
+  /quit, /exit, /q  – Exit chat
+  /new               – Start new conversation
+  /web               – Toggle web search
+  /sources           – Toggle source display
+  /tools             – Toggle MCP tools display
+  /id                – Show conversation ID
+  /help              – Show this help
+""")
+                    continue
                 elif cmd == "/new":
                     conversation_id = None
-                    print(f"{_C.DIM}  ↻ New conversation{_C.RESET}")
-                    continue
-                elif cmd == "/export":
-                    if conversation_id:
-                        path = f"ttkia_chat_{conversation_id[:8]}.zip"
-                        client.export_conversation(conversation_id, path)
-                        print(f"{_C.DIM}  📦 Exported to {path}{_C.RESET}")
-                    else:
-                        print(f"{_C.DIM}  No active conversation{_C.RESET}")
-                    continue
-                elif cmd == "/sources":
-                    args._show_sources = not getattr(args, '_show_sources', False)
-                    state = "on" if args._show_sources else "off"
-                    print(f"{_C.DIM}  Sources: {state}{_C.RESET}")
-                    continue
-                elif cmd == "/id":
-                    print(f"{_C.DIM}  Conversation: {conversation_id or '(none)'}{_C.RESET}")
+                    print(f"{_C.DIM}Starting new conversation{_C.RESET}\n")
                     continue
                 elif cmd == "/web":
                     args._web = not getattr(args, '_web', False)
-                    state = "on" if args._web else "off"
-                    print(f"{_C.DIM}  Web search: {state}{_C.RESET}")
+                    state = "ON" if args._web else "OFF"
+                    print(f"{_C.DIM}Web search: {state}{_C.RESET}\n")
                     continue
-                elif cmd == "/help":
-                    print(f"{_C.DIM}  /quit    Exit chat")
-                    print(f"  /new     Start new conversation")
-                    print(f"  /export  Export conversation as ZIP")
-                    print(f"  /sources Toggle source display")
-                    print(f"  /web     Toggle web search")
-                    print(f"  /id      Show conversation ID{_C.RESET}")
+                elif cmd == "/sources":
+                    args._show_sources = not getattr(args, '_show_sources', False)
+                    state = "ON" if args._show_sources else "OFF"
+                    print(f"{_C.DIM}Show sources: {state}{_C.RESET}\n")
+                    continue
+                elif cmd == "/tools":
+                    args._show_tools = not getattr(args, '_show_tools', False)
+                    state = "ON" if args._show_tools else "OFF"
+                    print(f"{_C.DIM}Show MCP tools: {state}{_C.RESET}\n")
+                    continue
+                elif cmd == "/id":
+                    cid = conversation_id or "(none)"
+                    print(f"{_C.DIM}Conversation: {cid}{_C.RESET}\n")
                     continue
                 else:
-                    print(f"{_C.DIM}  Unknown command. Type /help{_C.RESET}")
+                    print(f"{_C.DIM}Unknown command. Type /help{_C.RESET}")
                     continue
 
             # ── Query ──
@@ -312,15 +341,29 @@ def cmd_chat(args):
                 conf = response.confidence or 0
                 conf_color = _C.GREEN if conf >= 0.7 else _C.YELLOW if conf >= 0.4 else _C.RED
 
+                # MCP indicator in the status line
+                mcp_info = ""
+                if response.used_mcp:
+                    ok = sum(1 for t in response.mcp_tools if t.is_success)
+                    mcp_info = f" │ 🔧{ok}mcp"
+
                 print(f"\n{_C.BOLD}TTKIA:{_C.RESET} {response.text}")
-                print(f"{_C.DIM}  [{conf_color}{conf:.0%}{_C.DIM} │ {len(response.sources)}src │ {response.token_usage.total}tok │ {elapsed:.1f}s]{_C.RESET}\n")
+                print(f"{_C.DIM}  [{conf_color}{conf:.0%}{_C.DIM} │ {len(response.sources)}src │ {response.token_usage.total}tok │ {elapsed:.1f}s{mcp_info}]{_C.RESET}")
+
+                # MCP tools detail
+                if getattr(args, '_show_tools', False) and response.used_mcp:
+                    _print_mcp_tools(response)
 
                 # Sources
                 if getattr(args, '_show_sources', False) and response.sources:
                     for s in response.sources:
                         icon = "🌐" if s.is_web else "📄"
                         print(f"  {_C.DIM}{icon} {s.title or s.source}{_C.RESET}")
-                    print()
+
+                # Follow-ups
+                _print_follow_ups(response)
+
+                print()
 
             except RateLimitError as e:
                 print(f"\n{_C.YELLOW}⏳ Rate limited. Wait {e.retry_after}s{_C.RESET}\n")
@@ -427,6 +470,7 @@ def main():
     p.add_argument("--web", action="store_true", help="Enable web search")
     p.add_argument("--cot", action="store_true", help="Enable Chain of Thought")
     p.add_argument("--sources", action="store_true", help="Show source documents")
+    p.add_argument("--tools", action="store_true", help="Show MCP tools detail")
     p.add_argument("--json", action="store_true", help="Output JSON")
     p.set_defaults(func=cmd_ask)
 

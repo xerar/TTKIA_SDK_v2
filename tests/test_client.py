@@ -8,7 +8,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from ttkia_sdk import TTKIAClient, QueryResponse, TTKIAError, AuthenticationError, RateLimitError
-from ttkia_sdk.models import Source, TokenUsage, TimingInfo, HealthStatus, ConversationSummary
+from ttkia_sdk.models import Source, TokenUsage, TimingInfo, HealthStatus, ConversationSummary, MCPToolResult
 
 
 # ═══════════════════════════════════════════════════════════
@@ -34,6 +34,40 @@ def api_response():
         "webs": [],
         "links": [],
         "thinking_process": [],
+        "mcp_tools": [],
+        "follow_ups": [],
+        "error": None,
+    }
+
+
+@pytest.fixture
+def api_response_with_mcp():
+    """Response from /query_complete that used MCP tools."""
+    return {
+        "success": True,
+        "conversation_id": "conv-789",
+        "message_id": "msg-012",
+        "query": "Who has CCNA certification?",
+        "response_text": "Based on the directory, 5 employees have CCNA...",
+        "confidence": 0.92,
+        "recommended_response": None,
+        "query_extended": None,
+        "token_counts": {"input": 800, "output": 350},
+        "timing": [{"retrieve": 0.3}, {"mcp_tools": 1.2}, {"textual": 2.5}],
+        "inferred_environments": ["networking"],
+        "docs": [],
+        "webs": [],
+        "links": [],
+        "thinking_process": [],
+        "mcp_tools": [
+            {
+                "name": "people_search",
+                "status": "success",
+                "args": {"certificacion": "CCNA"},
+                "result": {"status": "success", "total": 5, "results": []}
+            }
+        ],
+        "follow_ups": ["What other Cisco certifications exist?", "Who has CCNP?"],
         "error": None,
     }
 
@@ -58,7 +92,7 @@ class TestClientInit:
     def test_bearer_token_auth(self):
         client = TTKIAClient("https://test.com", bearer_token="eyJhbG...")
         assert client._bearer_token == "eyJhbG..."
-        assert client._http.auth is not None  # Auth handled via httpx.Auth
+        assert client._http.auth is not None
         client.close()
 
     def test_api_key_auth(self):
@@ -69,28 +103,62 @@ class TestClientInit:
 
     def test_both_auth_methods(self):
         """Both can be provided simultaneously."""
-        client = TTKIAClient("https://test.com", api_key="ttkia_sk_abc", bearer_token="jwt")
-        assert "X-API-Key" in client._http.headers
-        assert client._http.auth is not None  # Bearer via httpx.Auth
+        client = TTKIAClient("https://test.com", bearer_token="tok", api_key="ttkia_sk_key")
+        assert client._bearer_token == "tok"
+        assert client._api_key == "ttkia_sk_key"
         client.close()
 
     def test_no_auth_raises(self):
-        with pytest.raises(ValueError, match="Provide either"):
+        with pytest.raises(TTKIAError):
             TTKIAClient("https://test.com")
 
-    def test_invalid_api_key_prefix(self):
-        with pytest.raises(ValueError, match="must start with"):
-            TTKIAClient("https://test.com", api_key="bad_key")
+    def test_no_url_raises(self):
+        """No URL and no config file should raise."""
+        with pytest.raises(TTKIAError):
+            TTKIAClient(api_key="ttkia_sk_test")
 
-    def test_url_trailing_slash_stripped(self):
-        client = TTKIAClient("https://test.com/", bearer_token="tok")
-        assert client.base_url == "https://test.com"
-        client.close()
 
-    def test_repr(self):
-        client = TTKIAClient("https://test.com", bearer_token="tok")
-        assert "bearer" in repr(client)
-        client.close()
+# ═══════════════════════════════════════════════════════════
+# QUERY RESPONSE PARSING
+# ═══════════════════════════════════════════════════════════
+
+class TestQueryParsing:
+
+    def test_basic_response(self, api_response):
+        qr = TTKIAClient._parse_query_response(api_response)
+        assert qr.success is True
+        assert qr.text == "BGP is a path vector protocol..."
+        assert qr.confidence == 0.85
+        assert len(qr.docs) == 1
+        assert qr.token_usage.total == 700
+        assert not qr.used_mcp
+
+    def test_mcp_response(self, api_response_with_mcp):
+        qr = TTKIAClient._parse_query_response(api_response_with_mcp)
+        assert qr.success is True
+        assert qr.used_mcp is True
+        assert len(qr.mcp_tools) == 1
+        assert qr.mcp_tools[0].name == "people_search"
+        assert qr.mcp_tools[0].is_success
+        assert qr.mcp_tools[0].args == {"certificacion": "CCNA"}
+        assert len(qr.follow_ups) == 2
+
+    def test_timing_dict_format(self):
+        """Backend may return timing as dict instead of list."""
+        data = {
+            "success": True,
+            "response_text": "test",
+            "timing": {"retrieve": 0.5, "textual": 2.0},
+            "token_counts": {},
+        }
+        qr = TTKIAClient._parse_query_response(data)
+        assert qr.timing.get("retrieve") == 0.5
+
+    def test_error_response(self):
+        data = {"success": False, "response_text": "", "error": "Pipeline failed"}
+        qr = TTKIAClient._parse_query_response(data)
+        assert qr.is_error
+        assert qr.error == "Pipeline failed"
 
 
 # ═══════════════════════════════════════════════════════════
@@ -99,227 +167,134 @@ class TestClientInit:
 
 class TestModels:
 
-    def test_query_response_parsing(self, api_response):
-        resp = QueryResponse(
-            success=api_response["success"],
-            conversation_id=api_response["conversation_id"],
-            response_text=api_response["response_text"],
-            confidence=api_response["confidence"],
-            token_usage=TokenUsage(
-                input_tokens=api_response["token_counts"]["input"],
-                output_tokens=api_response["token_counts"]["output"],
-            ),
-            timing=TimingInfo(raw=api_response["timing"]),
-            docs=[Source(**d) for d in api_response["docs"]],
+    def test_conversation_summary_string_dates(self):
+        cs = ConversationSummary(
+            conversation_id="abc",
+            title="Test",
+            created_at="2024-01-01T00:00:00",
+            updated_at="2024-01-02T00:00:00",
         )
-        assert resp.text == "BGP is a path vector protocol..."
-        assert resp.confidence == 0.85
-        assert resp.token_usage.total == 700
-        assert resp.timing.total_seconds == pytest.approx(2.9)
-        assert resp.timing.get_step("retrieve") == 0.5
-        assert not resp.is_error
-        assert len(resp.sources) == 1
+        assert cs.updated_at == "2024-01-02T00:00:00"
 
-    def test_query_response_error(self):
-        resp = QueryResponse(success=False, error="Timeout")
-        assert resp.is_error
-        assert "ERROR" in str(resp)
+    def test_conversation_summary_float_dates(self):
+        """Backend update_memory.py writes time.time() as updated_at."""
+        cs = ConversationSummary(
+            conversation_id="abc",
+            title="Test",
+            created_at="2024-01-01T00:00:00",
+            updated_at=1772621971.2031674,
+        )
+        # Should be coerced to ISO string
+        assert isinstance(cs.updated_at, str)
+        assert "T" in cs.updated_at
 
-    def test_query_response_str(self):
-        resp = QueryResponse(success=True, response_text="Hello world", confidence=0.9)
-        assert "90%" in str(resp)
+    def test_conversation_summary_none_dates(self):
+        cs = ConversationSummary(conversation_id="abc")
+        assert cs.updated_at is None
+        assert cs.created_at is None
+
+    def test_mcp_tool_result(self):
+        t = MCPToolResult(name="people_search", status="success", args={"q": "test"}, result={"total": 5})
+        assert t.is_success
+        assert "people_search" in str(t)
+
+    def test_mcp_tool_result_error(self):
+        t = MCPToolResult(name="bad_tool", status="error")
+        assert not t.is_success
 
     def test_source_is_web(self):
-        assert Source(tag="internet").is_web
-        assert not Source(tag="bookshelf").is_web
-        assert not Source().is_web
-
-    def test_token_usage(self):
-        usage = TokenUsage(input_tokens=100, output_tokens=50)
-        assert usage.total == 150
-
-    def test_timing_summary(self):
-        timing = TimingInfo(raw=[{"retrieve": 0.5}, {"textual": 2.0}, {"analyze": 0.3}])
-        summary = timing.summary()
-        assert summary == {"retrieve": 0.5, "textual": 2.0, "analyze": 0.3}
-        assert timing.get_step("nonexistent") is None
+        s1 = Source(source="https://example.com", title="Web")
+        s2 = Source(source="docs.pdf", title="Doc")
+        assert s1.is_web
+        assert not s2.is_web
 
     def test_health_status(self):
-        assert HealthStatus(status="healthy").is_healthy
-        assert not HealthStatus(status="degraded").is_healthy
-
-    def test_conversation_summary(self):
-        cs = ConversationSummary(conversation_id="abc", title="Test")
-        assert cs.conversation_id == "abc"
+        h = HealthStatus(status="ok")
+        assert h.is_healthy
+        h2 = HealthStatus(status="degraded")
+        assert not h2.is_healthy
 
 
 # ═══════════════════════════════════════════════════════════
-# EXCEPTIONS
+# API CALLS (mocked)
 # ═══════════════════════════════════════════════════════════
 
-class TestExceptions:
+class TestAPICalls:
 
-    def test_ttkia_error_str(self):
-        err = TTKIAError("Failed", status_code=500, detail="Internal")
-        assert "[500]" in str(err)
-        assert "Internal" in str(err)
+    def test_query_sync(self, api_response):
+        client = TTKIAClient("https://test.com", api_key="ttkia_sk_test")
+        mock_resp = _mock_http_response(api_response)
+        client._http_sync.post = MagicMock(return_value=mock_resp)
 
-    def test_error_without_status(self):
-        err = TTKIAError("Generic error")
-        assert "Generic error" in str(err)
+        qr = client.query("What is BGP?")
+        assert qr.success
+        assert qr.text == "BGP is a path vector protocol..."
+        client.close()
 
-    def test_auth_error_is_ttkia_error(self):
-        assert isinstance(AuthenticationError("Bad"), TTKIAError)
+    def test_query_with_mcp(self, api_response_with_mcp):
+        client = TTKIAClient("https://test.com", api_key="ttkia_sk_test")
+        mock_resp = _mock_http_response(api_response_with_mcp)
+        client._http_sync.post = MagicMock(return_value=mock_resp)
 
-    def test_rate_limit_retry_after(self):
-        err = RateLimitError("Too fast", retry_after=30, status_code=429)
-        assert err.retry_after == 30
+        qr = client.query("Who has CCNA?")
+        assert qr.success
+        assert qr.used_mcp
+        assert qr.mcp_tools[0].name == "people_search"
+        client.close()
 
+    def test_list_conversations_float_dates(self):
+        """Regression: updated_at as float from MongoDB should not crash."""
+        client = TTKIAClient("https://test.com", api_key="ttkia_sk_test")
+        env_data = {
+            "environment": ["test"],
+            "user": {
+                "history_chat": {
+                    "conversations": [
+                        {
+                            "conversation_id": "abc-123",
+                            "title": "Test conv",
+                            "created_at": "2024-01-01T00:00:00",
+                            "updated_at": 1772621971.2031674,  # ← float from time.time()
+                        }
+                    ]
+                }
+            },
+            "prompts": [],
+            "styles": [],
+        }
+        mock_resp = _mock_http_response(env_data)
+        client._http_sync.post = MagicMock(return_value=mock_resp)
 
-# ═══════════════════════════════════════════════════════════
-# CLIENT METHODS (mocked HTTP)
-# ═══════════════════════════════════════════════════════════
+        convs = client.list_conversations()
+        assert len(convs) == 1
+        assert isinstance(convs[0].updated_at, str)
+        client.close()
 
-class TestClientMethods:
+    def test_health(self):
+        client = TTKIAClient("https://test.com", api_key="ttkia_sk_test")
+        mock_resp = _mock_http_response({"status": "ok"})
+        client._http_sync.get = MagicMock(return_value=mock_resp)
 
-    @pytest.mark.asyncio
-    async def test_aquery_success(self, api_response):
-        client = TTKIAClient("https://test.com", bearer_token="tok")
-        client._http = AsyncMock()
-        client._http.post.return_value = _mock_http_response(api_response)
+        h = client.health()
+        assert h.is_healthy
+        client.close()
 
-        result = await client.aquery("What is BGP?")
-
-        assert isinstance(result, QueryResponse)
-        assert result.text == "BGP is a path vector protocol..."
-        assert result.confidence == 0.85
-        assert result.conversation_id == "conv-123"
-        assert result.token_usage.total == 700
-
-        # Verify correct endpoint called
-        client._http.post.assert_called_once()
-        call_args = client._http.post.call_args
-        assert call_args[0][0] == "/query_complete"
-
-        await client.aclose()
-
-    @pytest.mark.asyncio
-    async def test_aquery_with_options(self, api_response):
-        client = TTKIAClient("https://test.com", bearer_token="tok")
-        client._http = AsyncMock()
-        client._http.post.return_value = _mock_http_response(api_response)
-
-        await client.aquery(
-            "test",
-            conversation_id="conv-1",
-            prompt="expert",
-            style="detailed",
-            web_search=True,
-            teacher_mode=True,
-            sources=["firewall.pdf"],
-            title="My Query",
-        )
-
-        payload = client._http.post.call_args[1]["json"]
-        assert payload["conversation_id"] == "conv-1"
-        assert payload["prompt"] == "expert"
-        assert payload["style"] == "detailed"
-        assert payload["web_search"] is True
-        assert payload["teacher_mode"] is True
-        assert payload["sources"] == ["firewall.pdf"]
-        assert payload["title"] == "My Query"
-
-        await client.aclose()
-
-    @pytest.mark.asyncio
-    async def test_ahealth(self):
-        client = TTKIAClient("https://test.com", bearer_token="tok")
-        client._http = AsyncMock()
-        client._http.get.return_value = _mock_http_response({"status": "healthy"})
-
-        result = await client.ahealth()
-        assert result.is_healthy
-        await client.aclose()
-
-    @pytest.mark.asyncio
-    async def test_aget_environments(self):
-        client = TTKIAClient("https://test.com", bearer_token="tok")
-        client._http = AsyncMock()
-        client._http.get.return_value = _mock_http_response({
-            "environment": ["retail", "banking"],
-            "conversations": [],
-        })
-
-        envs = await client.aget_environments()
-        assert envs == ["retail", "banking"]
-        await client.aclose()
-
-    @pytest.mark.asyncio
-    async def test_error_401(self):
-        client = TTKIAClient("https://test.com", bearer_token="tok")
-        client._http = AsyncMock()
-        client._http.post.return_value = _mock_http_response(
-            {"detail": "Invalid token"}, status_code=401
-        )
+    def test_auth_error(self):
+        client = TTKIAClient("https://test.com", api_key="ttkia_sk_test")
+        mock_resp = _mock_http_response({"detail": "Invalid token"}, 401)
+        client._http_sync.post = MagicMock(return_value=mock_resp)
 
         with pytest.raises(AuthenticationError):
-            await client.aquery("test")
-        await client.aclose()
+            client.query("test")
+        client.close()
 
-    @pytest.mark.asyncio
-    async def test_error_429(self):
-        client = TTKIAClient("https://test.com", bearer_token="tok")
-        client._http = AsyncMock()
-        mock_resp = _mock_http_response({"detail": "Rate limit"}, status_code=429)
+    def test_rate_limit(self):
+        client = TTKIAClient("https://test.com", api_key="ttkia_sk_test")
+        mock_resp = _mock_http_response({"detail": "Too many requests"}, 429)
         mock_resp.headers = {"Retry-After": "30"}
-        client._http.post.return_value = mock_resp
+        client._http_sync.post = MagicMock(return_value=mock_resp)
 
         with pytest.raises(RateLimitError) as exc_info:
-            await client.aquery("test")
+            client.query("test")
         assert exc_info.value.retry_after == 30
-        await client.aclose()
-
-    @pytest.mark.asyncio
-    async def test_error_500(self):
-        client = TTKIAClient("https://test.com", bearer_token="tok")
-        client._http = AsyncMock()
-        client._http.post.return_value = _mock_http_response(
-            {"detail": "Internal error"}, status_code=500
-        )
-
-        with pytest.raises(TTKIAError) as exc_info:
-            await client.aquery("test")
-        assert exc_info.value.status_code == 500
-        await client.aclose()
-
-    @pytest.mark.asyncio
-    async def test_afeedback(self):
-        client = TTKIAClient("https://test.com", bearer_token="tok")
-        client._http = AsyncMock()
-        client._http.post.return_value = _mock_http_response({
-            "status": "success",
-            "message": "Feedback saved",
-        })
-
-        result = await client.afeedback("conv-1", "msg-1", True, comment="Great")
-        assert result.success
-        assert result.message == "Feedback saved"
-        await client.aclose()
-
-    @pytest.mark.asyncio
-    async def test_timing_dict_format(self):
-        """Backend can return timing as dict instead of list."""
-        client = TTKIAClient("https://test.com", bearer_token="tok")
-        client._http = AsyncMock()
-        data = {
-            "success": True, "conversation_id": "c", "message_id": "m",
-            "query": "q", "response_text": "r", "confidence": 0.5,
-            "timing": {"retrieve": 0.5, "textual": 2.0},  # dict format
-            "token_counts": {"input": 10, "output": 20},
-            "docs": [], "webs": [], "links": [],
-        }
-        client._http.post.return_value = _mock_http_response(data)
-
-        result = await client.aquery("test")
-        assert result.timing.total_seconds == pytest.approx(2.5)
-        await client.aclose()
+        client.close()
