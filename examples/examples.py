@@ -2,12 +2,10 @@
 TTKIA SDK – Usage Examples
 ===========================
 
-Examples read configuration from environment variables.
-Optionally supports .env files if python-dotenv is installed.
-
-Required:
-  - TTKIA_URL (or TTKIA_BASE_URL)
-  - TTKIA_API_KEY (or TTKIA_TOKEN)
+Configuration priority (handled by TTKIAClient automatically):
+  1. Environment variables: TTKIA_URL, TTKIA_API_KEY (or TTKIA_TOKEN)
+  2. .env file in this directory (if python-dotenv is installed)
+  3. ~/.ttkia/config.json (created by: ttkia config --url ... --api-key ...)
 
 Optional:
   - TTKIA_EXAMPLE = simple | conv | cot | web | errors | batch | incident | feedback | explore
@@ -34,36 +32,20 @@ env_path = Path(__file__).resolve().parent / ".env"
 
 try:
     from dotenv import load_dotenv  # type: ignore
-except ModuleNotFoundError:
-    load_dotenv = None
-
-if load_dotenv:
     load_dotenv(dotenv_path=env_path)
+except ModuleNotFoundError:
+    pass
 
-# debug (temporal)
-print("Loaded .env:", env_path, "exists:", env_path.exists())
-print("TTKIA_URL =", os.getenv("TTKIA_URL"))
-print("TTKIA_API_KEY set? =", bool(os.getenv("TTKIA_API_KEY")))
-
-# ─────────────────────────────────────────────────────────
-# CONFIG
-# ─────────────────────────────────────────────────────────
-BASE_URL = os.getenv("TTKIA_URL") 
-API_KEY = os.getenv("TTKIA_API_KEY")
-TOKEN = os.getenv("TTKIA_TOKEN")  # legacy bearer token (optional)
 EXAMPLE = (os.getenv("TTKIA_EXAMPLE") or "simple").strip().lower()
 
-if not BASE_URL or not (API_KEY or TOKEN):
-    raise RuntimeError(
-        "Missing configuration.\n"
-        "Set TTKIA_URL (or TTKIA_BASE_URL) and TTKIA_API_KEY (or TTKIA_TOKEN).\n"
-        "Tip: install example deps with: pip install -e '.[examples]' and use a .env file."
-    )
 
+def _client(**kwargs) -> TTKIAClient:
+    """Create a TTKIAClient using auto-config resolution.
 
-def _client() -> TTKIAClient:
-    # Allow either API key or token
-    return TTKIAClient(base_url=BASE_URL, api_key=API_KEY, bearer_token=TOKEN)
+    Priority: explicit kwargs > env vars > ~/.ttkia/config.json
+    If a .env file exists in examples/, its vars are already loaded above.
+    """
+    return TTKIAClient(**kwargs)
 
 
 # ─────────────────────────────────────────────────────────
@@ -76,8 +58,12 @@ def example_simple_query():
         print(f"📊 Confidence: {response.confidence:.0%}")
         print(f"📚 Sources: {len(response.sources)} ({len(response.docs)} docs, {len(response.webs)} web)")
         print(f"💰 Tokens: {response.token_usage.total} ({response.token_usage.input_tokens} in / {response.token_usage.output_tokens} out)")
-        print(f"⏱️  Time: {response.timing.total_seconds:.1f}s")
+        print(f"⏱️  Time: {response.timing.total:.1f}s")
         print(f"🔗 Conversation: {response.conversation_id}")
+        if response.used_mcp:
+            print(f"🔧 MCP Tools: {len(response.mcp_tools)} used")
+            for t in response.mcp_tools:
+                print(f"   {'✅' if t.is_success else '❌'} {t.name}")
 
 
 # ─────────────────────────────────────────────────────────
@@ -135,7 +121,7 @@ def example_web_search():
 def example_error_handling():
     MAX_RETRIES = 3
 
-    with TTKIAClient(base_url=BASE_URL, api_key=API_KEY, bearer_token=TOKEN, timeout=180.0) as client:
+    with _client(timeout=180.0) as client:
         for attempt in range(1, MAX_RETRIES + 1):
             try:
                 response = client.query("Diagnose high CPU on Palo Alto PA-5200")
@@ -196,9 +182,9 @@ async def example_batch_queries():
                     "confidence": response.confidence,
                     "sources": len(response.sources),
                     "tokens": response.token_usage.total,
-                    "time": response.timing.total_seconds,
+                    "time": response.timing.total,
                 })
-                print(f"✅ {response.confidence:.0%} ({response.timing.total_seconds:.1f}s)")
+                print(f"✅ {response.confidence:.0%} ({response.timing.total:.1f}s)")
             except TTKIAError as e:
                 results.append({
                     "query": q,
@@ -265,16 +251,11 @@ def example_feedback():
         response = client.query("How do I enable MFA on CheckPoint Gaia?")
         print(f"Answer: {response.text[:200]}...")
 
-        result = client.feedback(
+        result = client.send_feedback(
             conversation_id=response.conversation_id,
             message_id=response.message_id,
-            positive=True,
-            comment="Accurate and well-structured answer",
-            query=response.query,  
-            answer=response.text,   
+            score=1,
         )
-
-
         print(f"✅ Feedback: {result.message}")
 
 
@@ -297,6 +278,11 @@ def example_explore():
         for s in client.get_styles():
             name = s.get("id", s.get("name", "?"))
             print(f"   • {name}")
+
+        convs = client.list_conversations()
+        print(f"\n💬 Conversations: {len(convs)}")
+        for c in convs[:5]:
+            print(f"   • {c.conversation_id[:8]} {c.title or '(untitled)'}")
 
 
 # ─────────────────────────────────────────────────────────
