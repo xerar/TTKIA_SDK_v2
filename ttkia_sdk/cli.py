@@ -436,6 +436,38 @@ def cmd_export(args):
         print(f"📦 Exported to {output}")
 
 
+def cmd_code(args):
+    """Interactive coding agent with local file operations."""
+    from ttkia_sdk.code import CodeAgent
+ 
+    project_dir = Path(args.directory).resolve()
+ 
+    if not project_dir.is_dir():
+        print(f"{_C.RED}❌ Not a directory: {project_dir}{_C.RESET}")
+        sys.exit(1)
+ 
+    client = _get_client()
+ 
+    agent = CodeAgent(
+        client=client,
+        root=project_dir,
+        prompt=args.prompt,
+        style=args.style,
+    )
+ 
+    try:
+        if args.query:
+            # One-shot mode: execute query and exit
+            query = " ".join(args.query)
+            agent.ask(query)
+        else:
+            # Interactive mode
+            agent.run_interactive()
+    except KeyboardInterrupt:
+        print(f"\n{_C.DIM}Bye!{_C.RESET}")
+    finally:
+        client.close()
+
 # ═══════════════════════════════════════════════════════════
 # MAIN
 # ═══════════════════════════════════════════════════════════
@@ -503,7 +535,15 @@ def main():
     p.add_argument("id", help="Conversation ID")
     p.add_argument("-o", "--output", help="Output filename")
     p.set_defaults(func=cmd_export)
-
+    
+    # ── code ──
+    p = sub.add_parser("code", help="Interactive coding agent (TTKIA Code)")
+    p.add_argument("query", nargs="*", help="One-shot query (omit for interactive mode)")
+    p.add_argument("-d", "--directory", default=".", help="Project directory (default: current)")
+    p.add_argument("-s", "--style", default="detailed", help="Response style (default: detailed)")
+    p.add_argument("-p", "--prompt", default="default", help="Prompt template")
+    p.set_defaults(func=cmd_code)
+    
     args = parser.parse_args()
 
     if not args.command:
