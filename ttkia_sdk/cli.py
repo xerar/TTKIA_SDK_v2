@@ -451,7 +451,6 @@ def cmd_code(args):
     agent = CodeAgent(
         client=client,
         root=project_dir,
-        prompt=args.prompt,
         style=args.style,
     )
  
@@ -541,9 +540,8 @@ def main():
     p.add_argument("query", nargs="*", help="One-shot query (omit for interactive mode)")
     p.add_argument("-d", "--directory", default=".", help="Project directory (default: current)")
     p.add_argument("-s", "--style", default="detailed", help="Response style (default: detailed)")
-    p.add_argument("-p", "--prompt", default="default", help="Prompt template")
     p.set_defaults(func=cmd_code)
-    
+
     args = parser.parse_args()
 
     if not args.command:

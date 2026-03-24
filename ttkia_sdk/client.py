@@ -345,6 +345,45 @@ class TTKIAClient:
         data = resp.json()
         return self._parse_query_response(data, fallback_query=query)
 
+
+    # ──────────────────────────────────────────────────────────
+    # CODE AGENT QUERY (via /code_query, lightweight single-call)
+    # ──────────────────────────────────────────────────────────
+
+    def code_query(
+            self,
+            query: str,
+            *,
+            conversation_id: Optional[str] = None,
+            title: Optional[str] = None,
+        ) -> QueryResponse:
+            """Send a code agent query via /code_query (lightweight, single LLM call)."""
+            payload = {"query": query}
+            if conversation_id:
+                payload["conversation_id"] = conversation_id
+            if title:
+                payload["title"] = title
+
+            resp = self._http_sync.post("/code_query", json=payload)
+            self._handle_error(resp)
+            data = resp.json()
+
+            return QueryResponse(
+                success=data.get("success", False),
+                conversation_id=data.get("conversation_id", ""),
+                message_id=data.get("message_id", ""),
+                query=query,
+                response_text=data.get("response_text", ""),
+                confidence=None,
+                token_usage=TokenUsage(
+                    input_tokens=data.get("token_counts", {}).get("input", 0),
+                    output_tokens=data.get("token_counts", {}).get("output", 0),
+                ),
+                timing=TimingInfo(raw=[]),
+                error=data.get("error"),
+            )
+
+
     # ──────────────────────────────────────────────────────────
     # CONVERSATIONS
     # ──────────────────────────────────────────────────────────
