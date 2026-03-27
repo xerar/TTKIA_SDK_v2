@@ -183,6 +183,32 @@ def cmd_ask(args):
                 print(f"{_C.RED}❌ Error: {response.error}{_C.RESET}")
                 sys.exit(1)
 
+            # JSON-only mode: salida limpia para uso programático
+            if args.json:
+                out = {
+                    "query": response.query,
+                    "text": response.text,
+                    "confidence": response.confidence,
+                    "conversation_id": response.conversation_id,
+                    "message_id": response.message_id,
+                    "tokens": {
+                        "input": response.token_usage.input_tokens,
+                        "output": response.token_usage.output_tokens,
+                    },
+                    "timing": response.timing.summary(),
+                    "sources": [
+                        {"title": s.title, "source": s.source, "web": s.is_web}
+                        for s in response.sources
+                    ],
+                    "mcp_tools": [
+                        {"name": t.name, "status": t.status, "args": t.args}
+                        for t in response.mcp_tools
+                    ],
+                    "follow_ups": response.follow_ups,
+                }
+                print(json.dumps(out, ensure_ascii=False))
+                return          
+
             # Response text
             print(f"\n{response.text}\n")
 
@@ -224,22 +250,6 @@ def cmd_ask(args):
             # Follow-ups
             _print_follow_ups(response)
 
-            # JSON output
-            if args.json:
-                print(f"\n{_C.DIM}─── JSON ───{_C.RESET}")
-                out = {
-                    "query": response.query,
-                    "text": response.text,
-                    "confidence": response.confidence,
-                    "conversation_id": response.conversation_id,
-                    "message_id": response.message_id,
-                    "tokens": {"input": response.token_usage.input_tokens, "output": response.token_usage.output_tokens},
-                    "timing": response.timing.summary(),
-                    "sources": [{"title": s.title, "source": s.source, "web": s.is_web} for s in response.sources],
-                    "mcp_tools": [{"name": t.name, "status": t.status, "args": t.args} for t in response.mcp_tools],
-                    "follow_ups": response.follow_ups,
-                }
-                print(json.dumps(out, indent=2, ensure_ascii=False))
 
         except AuthenticationError:
             print(f"{_C.RED}❌ Authentication failed. Run: ttkia config --api-key ...{_C.RESET}")
