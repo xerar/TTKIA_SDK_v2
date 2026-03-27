@@ -436,35 +436,6 @@ def cmd_export(args):
         print(f"📦 Exported to {output}")
 
 
-def cmd_code(args):
-    """Interactive coding agent with local file operations."""
-    from ttkia_sdk.code import CodeAgent
- 
-    project_dir = Path(args.directory).resolve()
- 
-    if not project_dir.is_dir():
-        print(f"{_C.RED}❌ Not a directory: {project_dir}{_C.RESET}")
-        sys.exit(1)
- 
-    client = _get_client()
- 
-    agent = CodeAgent(
-        client=client,
-        root=project_dir,
-        style=args.style,
-    )
- 
-    try:
-        if args.query:
-            # One-shot mode: execute query and exit (Rich CLI, unchanged)
-            query = " ".join(args.query)
-            agent.ask(query)
-        else:
-            # Interactive mode: launch efest(OS) TUI
-            from ttkia_sdk.tui import run_tui
-            run_tui(agent)
-    except KeyboardInterrupt:
-        print(f"\n{_C.DIM}Bye!{_C.RESET}")
 
 # ═══════════════════════════════════════════════════════════
 # MAIN
@@ -534,13 +505,6 @@ def main():
     p.add_argument("-o", "--output", help="Output filename")
     p.set_defaults(func=cmd_export)
     
-    # ── code ──
-    p = sub.add_parser("code", help="Interactive coding agent (TTKIA Code)")
-    p.add_argument("query", nargs="*", help="One-shot query (omit for interactive mode)")
-    p.add_argument("-d", "--directory", default=".", help="Project directory (default: current)")
-    p.add_argument("-s", "--style", default="detailed", help="Response style (default: detailed)")
-    p.set_defaults(func=cmd_code)
-
     args = parser.parse_args()
 
     if not args.command:

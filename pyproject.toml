@@ -31,11 +31,6 @@ dependencies = [
 
 
 [project.optional-dependencies]
-code = [
-    "openpyxl>=3.1.0",
-    "python-pptx>=0.6.21",
-    "textual>=1.0.0",
-]
 examples = [
     "python-dotenv>=1.0.0",
 ]
