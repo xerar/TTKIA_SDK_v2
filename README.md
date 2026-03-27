@@ -227,12 +227,12 @@ asyncio.run(batch())
 
 ```python
 response = client.query("¿Cómo reseteo un FortiGate?")
-client.feedback(
+result = client.send_feedback(
     conversation_id=response.conversation_id,
     message_id=response.message_id,
-    positive=True,
-    comment="Respuesta precisa",
+    score=1,   # 1 = positivo, -1 = negativo
 )
+print(result.message)
 ```
 
 ### Exportar conversación
@@ -292,7 +292,7 @@ response.thinking_process      # Lista de pasos del razonamiento
 | `get_conversation()` | `aget_conversation()` | Obtener conversación con mensajes |
 | `create_conversation()` | `acreate_conversation()` | Crear nueva conversación |
 | `delete_conversation()` | `adelete_conversation()` | Eliminar conversación |
-| `feedback()` | `afeedback()` | Enviar feedback sobre una respuesta |
+| `send_feedback()` | `asend_feedback()` | Enviar feedback sobre una respuesta |
 | `export_conversation()` | `aexport_conversation()` | Exportar conversación como ZIP |
 
 ---
