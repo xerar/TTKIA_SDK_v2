@@ -347,7 +347,7 @@ class TTKIAClient:
 
 
     # ──────────────────────────────────────────────────────────
-    # CODE AGENT QUERY (via /code_query, lightweight single-call)
+    # CODE AGENT QUERY (via /code/query, lightweight single-call)
     # ──────────────────────────────────────────────────────────
 
     def code_query(
@@ -357,14 +357,14 @@ class TTKIAClient:
             conversation_id: Optional[str] = None,
             title: Optional[str] = None,
         ) -> QueryResponse:
-            """Send a code agent query via /code_query (lightweight, single LLM call)."""
+            """Send a code agent query via /code/query (lightweight, single LLM call)."""
             payload = {"query": query}
             if conversation_id:
                 payload["conversation_id"] = conversation_id
             if title:
                 payload["title"] = title
 
-            resp = self._http_sync.post("/code_query", json=payload)
+            resp = self._http_sync.post("/code/query", json=payload)
             self._handle_error(resp)
             data = resp.json()
 
@@ -384,6 +384,41 @@ class TTKIAClient:
             )
 
 
+    def code_query_stream(
+        self,
+        query: str,
+        *,
+        conversation_id: Optional[str] = None,
+        title: Optional[str] = None,
+    ):
+        '''
+        Stream a code agent query via /code/stream (SSE).
+        
+        Yields:
+            dict: Events with 'type' and 'content' keys.
+                  Types: 'mcp', 'text', 'done', 'error'
+        '''
+        import json
+ 
+        payload = {"query": query}
+        if conversation_id:
+            payload["conversation_id"] = conversation_id
+        if title:
+            payload["title"] = title
+ 
+        with self._http_sync.stream("POST", "/code/stream", json=payload) as resp:
+            if resp.status_code != 200:
+                raise TTKIAError(f"Stream failed: {resp.status_code}", resp.status_code)
+ 
+            for line in resp.iter_lines():
+                if line.startswith("data: "):
+                    try:
+                        event = json.loads(line[6:])
+                        yield event
+                    except json.JSONDecodeError:
+                        continue
+
+                    
     # ──────────────────────────────────────────────────────────
     # CONVERSATIONS
     # ──────────────────────────────────────────────────────────

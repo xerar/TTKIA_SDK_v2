@@ -29,7 +29,13 @@ dependencies = [
     "pydantic>=2.0,<3.0",
 ]
 
+
 [project.optional-dependencies]
+code = [
+    "openpyxl>=3.1.0",
+    "python-pptx>=0.6.21",
+    "textual>=1.0.0",
+]
 examples = [
     "python-dotenv>=1.0.0",
 ]
@@ -40,6 +46,7 @@ dev = [
     "pytest-cov>=4.0",
     "ruff>=0.1.0",
 ]
+
 
 [project.urls]
 Homepage = "https://github.com/xerar/TTKIA_SDK_v2"

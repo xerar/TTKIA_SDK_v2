@@ -1,5 +1,5 @@
 """
-TTKIA Code – Agentic coding assistant with polished terminal UI.
+efest(OS) — Agentic coding assistant powered by TTKIA.
 
 Runs as an interactive CLI loop:
 1. User describes a task
@@ -15,229 +15,58 @@ import re
 import sys
 import subprocess
 import tempfile
-import threading
-import time
-import itertools
+import ast as _ast
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict
+
+from rich.console import Console
+from rich.markdown import Markdown
+from rich.panel import Panel
+from rich.text import Text
+from rich.tree import Tree
+from rich.table import Table
+from rich.theme import Theme
+from rich.syntax import Syntax
+from rich import box
 
 from ttkia_sdk import TTKIAClient
 
 
 # ═══════════════════════════════════════════════════════════
-# TERMINAL UI ENGINE
+# RICH THEME + HEX CONSTANTS
 # ═══════════════════════════════════════════════════════════
+#
+# Theme names work ONLY inside [markup] tags:  [ttkia.teal]text[/]
+# For style= parameters, use the _HEX constants below.
 
-class _Term:
-    """
-    Terminal UI primitives — ANSI 256-color palette aligned with
-    Telefónica Tech branding. Disabled if not a TTY.
-    """
-    _on = sys.stdout.isatty()
+_THEME = Theme({
+    "ttkia.teal":       "#67C3C8",
+    "ttkia.navy":       "#141D32",
+    "ttkia.blue":       "#0066FF",
+    "ttkia.grey":       "#8F97AF",
+    "ttkia.pale":       "#B0B6CA",
+    "ttkia.amber":      "#CDA644",
+    "ttkia.coral":      "#C96C64",
+    "ttkia.green":      "#528889",
+    "ttkia.white":      "#F2F4FF",
+    "ttkia.success":    "bold #528889",
+    "ttkia.error":      "bold #C96C64",
+    "ttkia.warning":    "bold #CDA644",
+    "ttkia.info":       "dim #67C3C8",
+    "ttkia.dim":        "dim #8F97AF",
+})
 
-    # ── Core escapes ──
-    RESET   = "\033[0m"   if _on else ""
-    BOLD    = "\033[1m"   if _on else ""
-    DIM     = "\033[2m"   if _on else ""
-    ITALIC  = "\033[3m"   if _on else ""
-    UNDER   = "\033[4m"   if _on else ""
+_TEAL   = "#67C3C8"
+_PALE   = "#B0B6CA"
+_NAVY   = "#141D32"
+_GREY   = "#8F97AF"
+_AMBER  = "#CDA644"
+_GREEN  = "#528889"
+_CORAL  = "#C96C64"
+_WHITE  = "#F2F4FF"
 
-    # ── Telefónica Tech palette (ANSI 256) ──
-    TEAL    = "\033[38;5;73m"  if _on else ""   # #67C3C8 – brand accent
-    NAVY    = "\033[38;5;236m" if _on else ""   # #141D32 – deep bg
-    BLUE    = "\033[38;5;33m"  if _on else ""   # #0066FF – primary
-    GREY    = "\033[38;5;103m" if _on else ""   # #8F97AF – secondary
-    PALE    = "\033[38;5;146m" if _on else ""   # #B0B6CA – borders
-    WHITE   = "\033[38;5;255m" if _on else ""   # text
-    AMBER   = "\033[38;5;179m" if _on else ""   # #CDA644 – warning
-    CORAL   = "\033[38;5;167m" if _on else ""   # #C96C64 – error
-    GREEN   = "\033[38;5;72m"  if _on else ""   # #528889 – success
-    CYAN    = "\033[38;5;116m" if _on else ""   # lighter teal for readability
-
-    # ── Background ──
-    BG_DARK = "\033[48;5;235m" if _on else ""
-    BG_TEAL = "\033[48;5;73m"  if _on else ""
-    BG_RED  = "\033[48;5;167m" if _on else ""
-    BG_GREEN= "\033[48;5;72m"  if _on else ""
-
-    # ── Box drawing ──
-    H_LINE  = "─"
-    V_LINE  = "│"
-    TL      = "╭"
-    TR      = "╮"
-    BL      = "╰"
-    BR      = "╯"
-    ARROW_R = "▸"
-    DOT     = "●"
-    CHECK   = "✔"
-    CROSS   = "✖"
-    WARN    = "⚠"
-
-    @classmethod
-    def width(cls) -> int:
-        try:
-            return os.get_terminal_size().columns
-        except OSError:
-            return 80
-
-    @classmethod
-    def line(cls, char: str = "─", color: str = "") -> str:
-        c = color or cls.PALE
-        return f"{c}{char * cls.width()}{cls.RESET}"
-
-    @classmethod
-    def box_top(cls, title: str = "", color: str = "") -> str:
-        c = color or cls.TEAL
-        if title:
-            inner = cls.width() - 4 - len(title)
-            return f"{c}{cls.TL}{cls.H_LINE} {cls.BOLD}{title}{cls.RESET}{c} {cls.H_LINE * max(inner, 1)}{cls.TR}{cls.RESET}"
-        return f"{c}{cls.TL}{cls.H_LINE * (cls.width() - 2)}{cls.TR}{cls.RESET}"
-
-    @classmethod
-    def box_line(cls, text: str, color: str = "") -> str:
-        c = color or cls.TEAL
-        w = cls.width() - 4
-        clean = re.sub(r'\033\[[^m]*m', '', text)
-        pad = max(w - len(clean), 0)
-        return f"{c}{cls.V_LINE}{cls.RESET} {text}{' ' * pad} {c}{cls.V_LINE}{cls.RESET}"
-
-    @classmethod
-    def box_bottom(cls, color: str = "") -> str:
-        c = color or cls.TEAL
-        return f"{c}{cls.BL}{cls.H_LINE * (cls.width() - 2)}{cls.BR}{cls.RESET}"
-
-    @classmethod
-    def panel(cls, title: str, lines: List[str], color: str = ""):
-        print(cls.box_top(title, color))
-        for line in lines:
-            print(cls.box_line(line, color))
-        print(cls.box_bottom(color))
-
-    @classmethod
-    def section(cls, icon: str, title: str, color: str = ""):
-        c = color or cls.TEAL
-        w = cls.width() - len(icon) - len(title) - 4
-        print(f"\n{c}{cls.H_LINE * 2} {icon} {cls.BOLD}{title}{cls.RESET}{c} {cls.H_LINE * max(w, 1)}{cls.RESET}")
-
-    @classmethod
-    def success(cls, msg: str):
-        print(f"  {cls.GREEN}{cls.CHECK}{cls.RESET} {msg}")
-
-    @classmethod
-    def error(cls, msg: str):
-        print(f"  {cls.CORAL}{cls.CROSS}{cls.RESET} {msg}")
-
-    @classmethod
-    def warning(cls, msg: str):
-        print(f"  {cls.AMBER}{cls.WARN}{cls.RESET} {msg}")
-
-    @classmethod
-    def info(cls, msg: str):
-        print(f"  {cls.TEAL}{cls.DOT}{cls.RESET} {cls.DIM}{msg}{cls.RESET}")
-
-
-# ═══════════════════════════════════════════════════════════
-# ANIMATED SPINNER
-# ═══════════════════════════════════════════════════════════
-
-class Spinner:
-    """Animated spinner for long operations."""
-
-    _FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-
-    def __init__(self, message: str = "Thinking"):
-        self.message = message
-        self._stop = threading.Event()
-        self._thread: Optional[threading.Thread] = None
-
-    def __enter__(self):
-        self.start()
-        return self
-
-    def __exit__(self, *_):
-        self.stop()
-
-    def start(self):
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._spin, daemon=True)
-        self._thread.start()
-
-    def stop(self):
-        self._stop.set()
-        if self._thread:
-            self._thread.join()
-        sys.stdout.write(f"\r{' ' * (_Term.width())}\r")
-        sys.stdout.flush()
-
-    def _spin(self):
-        frames = itertools.cycle(self._FRAMES)
-        i = 0
-        while not self._stop.is_set():
-            frame = next(frames)
-            dots = "." * (i % 4)
-            elapsed = i * 0.1
-            timer = f"{_Term.DIM}{elapsed:.0f}s{_Term.RESET}" if elapsed >= 2 else ""
-            sys.stdout.write(
-                f"\r  {_Term.TEAL}{frame}{_Term.RESET} "
-                f"{_Term.WHITE}{self.message}{dots:<3}{_Term.RESET} {timer}"
-            )
-            sys.stdout.flush()
-            i += 1
-            self._stop.wait(0.1)
-
-
-# ═══════════════════════════════════════════════════════════
-# MARKDOWN-LITE RENDERER FOR TERMINAL
-# ═══════════════════════════════════════════════════════════
-
-def render_markdown(text: str) -> str:
-    """Light markdown rendering for terminal output."""
-    lines = text.split('\n')
-    out = []
-    in_code_block = False
-
-    for line in lines:
-        if line.strip().startswith('```'):
-            in_code_block = not in_code_block
-            if in_code_block:
-                lang = line.strip()[3:].strip()
-                label = f" {lang} " if lang else ""
-                out.append(f"  {_Term.DIM}{_Term.BG_DARK}{label}{'─' * 40}{_Term.RESET}")
-            else:
-                out.append(f"  {_Term.DIM}{'─' * 44}{_Term.RESET}")
-            continue
-
-        if in_code_block:
-            out.append(f"  {_Term.BG_DARK} {_Term.CYAN}{line}{_Term.RESET}")
-            continue
-
-        if line.startswith('### '):
-            out.append(f"\n  {_Term.TEAL}{_Term.BOLD}{line[4:]}{_Term.RESET}")
-        elif line.startswith('## '):
-            out.append(f"\n  {_Term.TEAL}{_Term.BOLD}{line[3:]}{_Term.RESET}")
-        elif line.startswith('# '):
-            out.append(f"\n  {_Term.WHITE}{_Term.BOLD}{line[2:]}{_Term.RESET}")
-        elif re.match(r'^\s*[-*]\s', line):
-            bullet = line.lstrip()
-            indent = len(line) - len(bullet)
-            content = re.sub(r'^[-*]\s', '', bullet)
-            out.append(f"  {'  ' * (indent // 2)}{_Term.TEAL}{_Term.ARROW_R}{_Term.RESET} {_apply_inline(content)}")
-        elif re.match(r'^(\s*)\d+\.\s(.+)', line):
-            m = re.match(r'^(\s*)\d+\.\s(.+)', line)
-            out.append(f"  {m.group(1)}{_Term.TEAL}{_Term.DOT}{_Term.RESET} {_apply_inline(m.group(2))}")
-        else:
-            out.append(f"  {_apply_inline(line)}")
-
-    return '\n'.join(out)
-
-
-def _apply_inline(text: str) -> str:
-    text = re.sub(r'\*\*(.+?)\*\*', f'{_Term.BOLD}\\1{_Term.RESET}', text)
-    text = re.sub(r'(?<!\*)\*(?!\*)(.+?)\*(?!\*)', f'{_Term.ITALIC}\\1{_Term.RESET}', text)
-    text = re.sub(r'`([^`]+)`', f'{_Term.BG_DARK}{_Term.CYAN} \\1 {_Term.RESET}', text)
-    text = text.replace('✅', f'{_Term.GREEN}✅{_Term.RESET}')
-    return text
+console = Console(theme=_THEME)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -252,6 +81,7 @@ class Action:
     search_text: Optional[str] = None
     replace_text: Optional[str] = None
     pattern: Optional[str] = None
+    line_range: Optional[str] = None
 
 
 @dataclass
@@ -260,7 +90,6 @@ class ActionResult:
     success: bool
     output: str
     skipped: bool = False
-
 
 
 # ═══════════════════════════════════════════════════════════
@@ -288,8 +117,8 @@ def _check_script_safety(script: str) -> Optional[str]:
         m = re.search(pattern, script)
         if m:
             return f"Blocked pattern: '{m.group()}'"
-    for m in re.finditer(r'(?:from|import)\s+([\w.]+)', script):
-        module = m.group(1).split('.')[0]
+    for m in re.finditer(r'^\s*(?:from\s+([\w.]+)|import\s+([\w.]+))', script, re.MULTILINE):
+        module = (m.group(1) or m.group(2)).split('.')[0]
         if module not in _ALLOWED_IMPORTS:
             return f"Blocked import: '{module}' (not in allowed list)"
     return None
@@ -299,48 +128,32 @@ def _check_script_safety(script: str) -> Optional[str]:
 # ACTION PARSER
 # ═══════════════════════════════════════════════════════════
 
-# REEMPLAZAR los dos regex y parse_actions por:
-
-_RE_SELF_CLOSE = re.compile(
-    r'<action\s+([^>]*?)\s*/\s*>',
-    re.DOTALL,
-)
-
-_RE_BLOCK = re.compile(
-    r'<action\s+([^>]*?)>(?P<body>.*?)</action>',
-    re.DOTALL,
-)
-
+_RE_SELF_CLOSE = re.compile(r'<action\s+([^>]*?)\s*/\s*>', re.DOTALL)
+_RE_BLOCK = re.compile(r'<action\s+([^>]*?)>(?P<body>.*?)</action[^>]*>', re.DOTALL)
 _RE_ATTR = re.compile(r'(\w+)="([^"]*)"')
 _RE_SEARCH = re.compile(r'<search>(.*?)</search>', re.DOTALL)
 _RE_REPLACE = re.compile(r'<replace>(.*?)</replace>', re.DOTALL)
 
 
 def _parse_attrs(attr_str: str) -> dict:
-    """Extract key=value attributes from an action tag, order-independent."""
     return dict(_RE_ATTR.findall(attr_str))
 
 
 def parse_actions(text: str) -> Tuple[str, List[Action]]:
     actions: List[Action] = []
-
     for m in _RE_SELF_CLOSE.finditer(text):
         attrs = _parse_attrs(m.group(1))
         actions.append(Action(
-            type=attrs.get("type", ""),
-            path=attrs.get("path"),
-            pattern=attrs.get("pattern"),
+            type=attrs.get("type", ""), path=attrs.get("path"),
+            pattern=attrs.get("pattern"), line_range=attrs.get("lines"),
         ))
-
     for m in _RE_BLOCK.finditer(text):
         attrs = _parse_attrs(m.group(1))
         body = m.group("body").strip()
         a = Action(
-            type=attrs.get("type", ""),
-            path=attrs.get("path"),
-            pattern=attrs.get("pattern"),
+            type=attrs.get("type", ""), path=attrs.get("path"),
+            pattern=attrs.get("pattern"), line_range=attrs.get("lines"),
         )
-
         if a.type == "edit_file":
             sm = _RE_SEARCH.search(body)
             rm = _RE_REPLACE.search(body)
@@ -351,13 +164,11 @@ def parse_actions(text: str) -> Tuple[str, List[Action]]:
         elif a.type == "run_script":
             a.content = body
             a.path = attrs.get("output") or attrs.get("path")
-
         actions.append(a)
 
     prose = _RE_BLOCK.sub("", text)
     prose = _RE_SELF_CLOSE.sub("", prose)
     prose = re.sub(r'\n{3,}', '\n\n', prose).strip()
-
     return prose, actions
 
 
@@ -374,6 +185,10 @@ def _resolve_path(path: str, root: Path) -> Path:
     if not str(resolved).startswith(str(root.resolve())):
         raise ValueError(f"Path traversal blocked: {path}")
     return resolved
+
+
+def _estimate_tokens(text: str) -> int:
+    return len(text) // 4
 
 
 def execute_action(action: Action, root: Path) -> ActionResult:
@@ -402,10 +217,24 @@ def _exec_read(action: Action, root: Path) -> ActionResult:
         content = fp.read_text(encoding="utf-8")
     except UnicodeDecodeError:
         return ActionResult(action=action, success=False, output=f"Binary file: {action.path}")
-    lines = content.split('\n')
-    numbered = '\n'.join(f"{i+1:4d} │ {l}" for i, l in enumerate(lines))
+
+    all_lines = content.split('\n')
+    total = len(all_lines)
+    line_range = getattr(action, 'line_range', None)
+    if line_range:
+        try:
+            parts = line_range.split('-')
+            start = max(1, int(parts[0])) - 1
+            end = min(total, int(parts[1])) if len(parts) > 1 else total
+            selected = all_lines[start:end]
+            numbered = '\n'.join(f"{i+start+1:4d} │ {l}" for i, l in enumerate(selected))
+            return ActionResult(action=action, success=True,
+                                output=f"[{action.path}] (lines {start+1}-{end} of {total})\n{numbered}")
+        except (ValueError, IndexError):
+            pass
+    numbered = '\n'.join(f"{i+1:4d} │ {l}" for i, l in enumerate(all_lines))
     return ActionResult(action=action, success=True,
-                        output=f"[{action.path}] ({len(lines)} lines)\n{numbered}")
+                        output=f"[{action.path}] ({total} lines)\n{numbered}")
 
 
 def _exec_write(action: Action, root: Path) -> ActionResult:
@@ -508,7 +337,7 @@ def _exec_run_script(action: Action, root: Path) -> ActionResult:
 
 
 # ═══════════════════════════════════════════════════════════
-# PROJECT TREE BUILDER
+# PROJECT TREE (rich.tree)
 # ═══════════════════════════════════════════════════════════
 
 _SKIP_DIRS = {
@@ -517,22 +346,21 @@ _SKIP_DIRS = {
     '.eggs', '*.egg-info', '.idea', '.vscode',
 }
 _SKIP_FILES = {'.DS_Store', 'Thumbs.db', '.gitkeep'}
-
 _FILE_ICONS = {
-    '.py': '🐍', '.js': '📜', '.ts': '📘', '.yaml': '⚙️ ', '.yml': '⚙️ ',
+    '.py': '🐍', '.js': '📜', '.ts': '📘', '.yaml': '⚙️', '.yml': '⚙️',
     '.json': '📋', '.md': '📝', '.html': '🌐', '.css': '🎨',
-    '.sh': '🔧', '.toml': '⚙️ ', '.sql': '🗃️ ', '.dockerfile': '🐳',
+    '.sh': '🔧', '.toml': '⚙️', '.sql': '🗃️', '.dockerfile': '🐳',
     '.xlsx': '📊', '.pptx': '📰', '.pdf': '📕',
 }
 
 
-def build_project_tree(root: Path, max_depth: int = 3) -> str:
-    lines = [f"{_Term.BOLD}{_Term.TEAL}{root.name}/{_Term.RESET}"]
-    _walk_tree(root, "", 0, max_depth, lines)
-    return '\n'.join(lines)
+def build_rich_tree(root: Path, max_depth: int = 3) -> Tree:
+    tree = Tree(f"[bold ttkia.teal]{root.name}/[/]", guide_style=_PALE)
+    _add_tree_nodes(root, tree, 0, max_depth)
+    return tree
 
 
-def _walk_tree(path: Path, prefix: str, depth: int, max_depth: int, lines: list):
+def _add_tree_nodes(path: Path, tree: Tree, depth: int, max_depth: int):
     if depth >= max_depth:
         return
     try:
@@ -546,21 +374,135 @@ def _walk_tree(path: Path, prefix: str, depth: int, max_depth: int, lines: list)
                     for sd in _SKIP_DIRS)
         and not e.name.startswith('.')
     ]
-    for i, entry in enumerate(entries):
-        is_last = i == len(entries) - 1
-        connector = f"{_Term.PALE}{'└── ' if is_last else '├── '}{_Term.RESET}"
-        child_prefix = prefix + f"{_Term.PALE}{'    ' if is_last else '│   '}{_Term.RESET}"
+    for entry in entries:
         if entry.is_dir():
-            lines.append(f"{prefix}{connector}{_Term.BOLD}{_Term.TEAL}{entry.name}/{_Term.RESET}")
-            _walk_tree(entry, child_prefix, depth + 1, max_depth, lines)
+            branch = tree.add(f"[bold ttkia.teal]{entry.name}/[/]")
+            _add_tree_nodes(entry, branch, depth + 1, max_depth)
         else:
-            icon = _FILE_ICONS.get(entry.suffix.lower(), " ")
+            icon = _FILE_ICONS.get(entry.suffix.lower(), "📄")
             size = entry.stat().st_size
             size_str = f"{size:,}B" if size < 1024 else f"{size/1024:.0f}K"
-            lines.append(
-                f"{prefix}{connector}{icon} {_Term.WHITE}{entry.name}{_Term.RESET}"
-                f"  {_Term.DIM}{size_str}{_Term.RESET}"
-            )
+            tree.add(f"{icon} [ttkia.white]{entry.name}[/]  [ttkia.dim]{size_str}[/]")
+
+
+# ═══════════════════════════════════════════════════════════
+# REPO MAP BUILDER
+# ═══════════════════════════════════════════════════════════
+
+_REPO_MAP_EXTENSIONS = {'.py', '.js', '.ts', '.yaml', '.yml', '.json', '.toml', '.cfg', '.sh', '.md'}
+_REPO_MAP_MAX_FILE_SIZE = 200_000
+
+
+def _extract_python_signatures(filepath: Path) -> List[str]:
+    try:
+        source = filepath.read_text(encoding='utf-8')
+        tree = _ast.parse(source)
+    except (SyntaxError, UnicodeDecodeError, OSError):
+        return []
+    sigs = []
+    for node in _ast.walk(tree):
+        if isinstance(node, _ast.ClassDef):
+            bases = ', '.join(getattr(b, 'id', getattr(b, 'attr', '?')) for b in node.bases)
+            bases_str = f"({bases})" if bases else ""
+            sigs.append(f"  class {node.name}{bases_str}  [line {node.lineno}]")
+            for item in node.body:
+                if isinstance(item, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+                    args = ', '.join(a.arg for a in item.args.args)
+                    prefix = "async " if isinstance(item, _ast.AsyncFunctionDef) else ""
+                    sigs.append(f"    {prefix}def {item.name}({args})  [line {item.lineno}]")
+        elif isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+            if hasattr(node, 'col_offset') and node.col_offset == 0:
+                args = ', '.join(a.arg for a in node.args.args)
+                prefix = "async " if isinstance(node, _ast.AsyncFunctionDef) else ""
+                sigs.append(f"  {prefix}def {node.name}({args})  [line {node.lineno}]")
+    return sigs
+
+
+def _extract_yaml_sections(filepath: Path) -> List[str]:
+    try:
+        content = filepath.read_text(encoding='utf-8')
+    except (UnicodeDecodeError, OSError):
+        return []
+    sections = []
+    for line in content.split('\n'):
+        stripped = line.rstrip()
+        if stripped and not stripped.startswith(' ') and not stripped.startswith('#') and ':' in stripped:
+            key = stripped.split(':')[0].strip()
+            if key and len(key) < 60:
+                sections.append(f"  {key}:")
+    return sections[:20]
+
+
+def _extract_markdown_headers(filepath: Path) -> List[str]:
+    try:
+        content = filepath.read_text(encoding='utf-8')
+    except (UnicodeDecodeError, OSError):
+        return []
+    headers = []
+    for line in content.split('\n'):
+        if line.startswith('#'):
+            level = len(line) - len(line.lstrip('#'))
+            text = line.lstrip('#').strip()
+            if text:
+                headers.append(f"  {'  ' * (level - 1)}{text}")
+    return headers[:15]
+
+
+def _extract_shell_functions(filepath: Path) -> List[str]:
+    try:
+        content = filepath.read_text(encoding='utf-8')
+    except (UnicodeDecodeError, OSError):
+        return []
+    funcs = []
+    for m in re.finditer(r'^(\w+)\s*\(\)', content, re.MULTILINE):
+        funcs.append(f"  {m.group(1)}()")
+    return funcs[:20]
+
+
+def build_repo_map(root: Path, max_depth: int = 3) -> str:
+    lines = [f"# Project: {root.name}"]
+    _build_repo_map_recursive(root, root, 0, max_depth, lines)
+    return '\n'.join(lines)
+
+
+def _build_repo_map_recursive(path: Path, root: Path, depth: int, max_depth: int, lines: list):
+    if depth >= max_depth:
+        return
+    try:
+        entries = sorted(path.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower()))
+    except PermissionError:
+        return
+    entries = [
+        e for e in entries
+        if e.name not in _SKIP_FILES
+        and not any(e.name == sd or (sd.startswith('*') and e.name.endswith(sd[1:]))
+                    for sd in _SKIP_DIRS)
+        and not e.name.startswith('.')
+    ]
+    for entry in entries:
+        rel = entry.relative_to(root)
+        if entry.is_dir():
+            lines.append(f"\n## {rel}/")
+            _build_repo_map_recursive(entry, root, depth + 1, max_depth, lines)
+        elif entry.suffix.lower() in _REPO_MAP_EXTENSIONS:
+            try:
+                size = entry.stat().st_size
+                if size > _REPO_MAP_MAX_FILE_SIZE:
+                    line_count = "large file"
+                else:
+                    content = entry.read_text(encoding='utf-8', errors='ignore')
+                    line_count = f"{content.count(chr(10)) + 1} lines"
+            except OSError:
+                line_count = "?"
+            lines.append(f"\n{rel} ({line_count})")
+            if entry.suffix == '.py' and size <= _REPO_MAP_MAX_FILE_SIZE:
+                lines.extend(_extract_python_signatures(entry))
+            elif entry.suffix in ('.yaml', '.yml') and size <= _REPO_MAP_MAX_FILE_SIZE:
+                lines.extend(_extract_yaml_sections(entry))
+            elif entry.suffix == '.md' and size <= _REPO_MAP_MAX_FILE_SIZE:
+                lines.extend(_extract_markdown_headers(entry))
+            elif entry.suffix == '.sh' and size <= _REPO_MAP_MAX_FILE_SIZE:
+                lines.extend(_extract_shell_functions(entry))
 
 
 # ═══════════════════════════════════════════════════════════
@@ -569,84 +511,112 @@ def _walk_tree(path: Path, prefix: str, depth: int, max_depth: int, lines: list)
 
 _MAX_ITERATIONS = 20
 
-_ACTION_CONFIG = {
-    "read_file":  {"icon": "📖", "label": "READ",   "color": _Term.CYAN,  "confirm": False},
-    "write_file": {"icon": "✏️",  "label": "WRITE",  "color": _Term.AMBER, "confirm": True},
-    "edit_file":  {"icon": "🔧", "label": "EDIT",   "color": _Term.AMBER, "confirm": True},
-    "search":     {"icon": "🔍", "label": "SEARCH", "color": _Term.CYAN,  "confirm": False},
-    "run_script": {"icon": "🐍", "label": "SCRIPT", "color": _Term.AMBER, "confirm": True},
+_ACTION_STYLE = {
+    "read_file":  {"icon": "📖", "label": "READ",   "markup": "ttkia.teal",  "confirm": False},
+    "write_file": {"icon": "✏️",  "label": "WRITE",  "markup": "ttkia.amber", "confirm": True},
+    "edit_file":  {"icon": "🔧", "label": "EDIT",   "markup": "ttkia.amber", "confirm": True},
+    "search":     {"icon": "🔍", "label": "SEARCH", "markup": "ttkia.teal",  "confirm": False},
+    "run_script": {"icon": "🐍", "label": "SCRIPT", "markup": "ttkia.amber", "confirm": True},
 }
 
 
 class CodeAgent:
-    """Interactive coding agent — TTKIA backend + local execution."""
+    """Interactive coding agent — TTKIA backend + local execution + rich UI."""
 
     def __init__(self, client: TTKIAClient, root: Path, style: str = "detailed"):
         self.client = client
         self.root = root.resolve()
-        self.prompt = 'code_agent'
+        self.prompt = "code_agent"
         self.style = style
         self.conversation_id: Optional[str] = None
         self._iteration = 0
         self._total_tokens = 0
         self._total_actions = 0
+        self._attached: Dict[str, str] = {}
+        self._attached_tokens: int = 0
+        self._token_budget: int = 30000
+        self._repo_map: str = ""
+        self._history: List[dict] = []
+        self._last_response: str = ""
+
+    # ──────────────────────────────────────────────────────
+    # CONTEXT BUILDING
+    # ──────────────────────────────────────────────────────
 
     def _build_context_prefix(self) -> str:
-        tree = build_project_tree(self.root, max_depth=2)
-        clean_tree = re.sub(r'\033\[[^m]*m', '', tree)
-        return (
-            f"<project_context>\n"
-            f"Working directory: {self.root}\n"
-            f"Project structure:\n```\n{clean_tree}\n```\n"
-            f"</project_context>\n\n"
-        )
+        if not self._repo_map:
+            self._repo_map = build_repo_map(self.root, max_depth=3)
+        parts = [
+            "<project_context>",
+            f"Working directory: {self.root}",
+            "<repo_map>",
+            self._repo_map,
+            "</repo_map>",
+        ]
+        if self._attached:
+            parts.append("<attached_files>")
+            for path, content in self._attached.items():
+                lines = content.split('\n')
+                numbered = '\n'.join(f"{i+1:4d} | {l}" for i, l in enumerate(lines))
+                parts.append(f'<file path="{path}" lines="{len(lines)}">')
+                parts.append(numbered)
+                parts.append("</file>")
+            parts.append("</attached_files>")
+        parts.append("</project_context>\n")
+        return '\n'.join(parts)
 
-    def _show_action_header(self, action: Action):
-        cfg = _ACTION_CONFIG.get(action.type, {"icon": "⚡", "label": "???", "color": _Term.GREY})
-        target = action.path or action.pattern or ""
-        print(f"\n  {cfg['icon']} {cfg['color']}{_Term.BOLD}{cfg['label']}{_Term.RESET}"
-              f"  {_Term.WHITE}{target}{_Term.RESET}")
+    def _build_history_block(self) -> str:
+        if len(self._history) <= 2:
+            return ""
+        lines = ["<conversation_history>"]
+        for entry in self._history[:-2]:
+            if entry["role"] == "assistant":
+                actions_str = ", ".join(entry.get("actions", []))
+                lines.append("  <step role='assistant'>")
+                if entry.get("summary"):
+                    lines.append(f"    <summary>{entry['summary']}</summary>")
+                if actions_str:
+                    lines.append(f"    <actions>{actions_str}</actions>")
+                lines.append("  </step>")
+            elif entry["role"] == "system":
+                lines.append("  <step role='execution'>Results received</step>")
+        lines.append("</conversation_history>\n")
+        return "\n".join(lines)
+
+    # ──────────────────────────────────────────────────────
+    # ACTION DISPLAY & EXECUTION
+    # ──────────────────────────────────────────────────────
 
     def _show_diff_preview(self, action: Action):
-        max_preview = 10
         if action.type == "edit_file" and action.search_text and action.replace_text:
-            old_lines = action.search_text.strip().split('\n')
-            new_lines = action.replace_text.strip().split('\n')
-            print(f"  {_Term.DIM}{'─' * 50}{_Term.RESET}")
-            for line in old_lines[:max_preview]:
-                print(f"  {_Term.CORAL}{_Term.BOLD} - {_Term.RESET}{_Term.CORAL}{line}{_Term.RESET}")
-            if len(old_lines) > max_preview:
-                print(f"  {_Term.DIM}  ... +{len(old_lines) - max_preview} lines{_Term.RESET}")
-            for line in new_lines[:max_preview]:
-                print(f"  {_Term.GREEN}{_Term.BOLD} + {_Term.RESET}{_Term.GREEN}{line}{_Term.RESET}")
-            if len(new_lines) > max_preview:
-                print(f"  {_Term.DIM}  ... +{len(new_lines) - max_preview} lines{_Term.RESET}")
-            print(f"  {_Term.DIM}{'─' * 50}{_Term.RESET}")
-
+            console.print()
+            console.print(Syntax(action.search_text.strip(), "python", theme="monokai",
+                                 line_numbers=False, background_color="#1a1a2e", padding=(0, 1)))
+            console.print(Text("  ↓ replaced by ↓", style=f"dim {_GREY}"))
+            console.print(Syntax(action.replace_text.strip(), "python", theme="monokai",
+                                 line_numbers=False, background_color="#1a2e1a", padding=(0, 1)))
         elif action.type == "write_file" and action.content:
-            lines = action.content.split('\n')
-            print(f"  {_Term.DIM}{'─' * 50}{_Term.RESET}")
-            for line in lines[:8]:
-                print(f"  {_Term.GREEN}{_Term.BOLD} + {_Term.RESET}{_Term.GREEN}{line}{_Term.RESET}")
-            if len(lines) > 8:
-                print(f"  {_Term.DIM}  ... +{len(lines) - 8} lines ({len(action.content):,} chars){_Term.RESET}")
-            print(f"  {_Term.DIM}{'─' * 50}{_Term.RESET}")
-
+            preview = '\n'.join(action.content.split('\n')[:12])
+            total = action.content.count('\n') + 1
+            console.print()
+            console.print(Syntax(preview, "python", theme="monokai",
+                                 line_numbers=False, background_color="#1a2e1a", padding=(0, 1)))
+            if total > 12:
+                console.print(f"  [ttkia.dim]... +{total - 12} more lines ({len(action.content):,} chars)[/]")
         elif action.type == "run_script" and action.content:
-            lines = action.content.strip().split('\n')
-            print(f"  {_Term.DIM}{'─' * 50}{_Term.RESET}")
-            for line in lines[:10]:
-                print(f"  {_Term.BG_DARK} {_Term.CYAN}{line}{_Term.RESET}")
-            if len(lines) > 10:
-                print(f"  {_Term.DIM}  ... +{len(lines) - 10} lines{_Term.RESET}")
-            print(f"  {_Term.DIM}{'─' * 50}{_Term.RESET}")
+            preview = '\n'.join(action.content.strip().split('\n')[:12])
+            total = action.content.strip().count('\n') + 1
+            console.print()
+            console.print(Syntax(preview, "python", theme="monokai",
+                                 line_numbers=True, padding=(0, 1)))
+            if total > 12:
+                console.print(f"  [ttkia.dim]... +{total - 12} more lines[/]")
 
     def _confirm_action(self, action: Action) -> bool:
         self._show_diff_preview(action)
         try:
-            resp = input(
-                f"  {_Term.AMBER}{_Term.BOLD}Apply?{_Term.RESET}"
-                f" {_Term.DIM}[{_Term.GREEN}y{_Term.DIM}/{_Term.CORAL}n{_Term.DIM}]{_Term.RESET} "
+            resp = console.input(
+                "  [ttkia.amber bold]Apply?[/] [ttkia.dim]\\[[ttkia.green]y[/ttkia.green]/[ttkia.coral]n[/ttkia.coral]][/] "
             ).strip().lower()
             return resp in ("y", "yes", "a", "all", "")
         except (KeyboardInterrupt, EOFError):
@@ -655,17 +625,20 @@ class CodeAgent:
     def _execute_actions(self, actions: List[Action]) -> str:
         results = []
         if actions:
-            _Term.section("⚡", f"Actions ({len(actions)})", _Term.TEAL)
+            console.print()
+            console.rule(f"[ttkia.teal]⚡ Actions ({len(actions)})[/]", style=_TEAL)
 
         for action in actions:
-            cfg = _ACTION_CONFIG.get(action.type, {"confirm": True})
-            self._show_action_header(action)
+            cfg = _ACTION_STYLE.get(action.type, {"icon": "⚡", "label": "???", "markup": "ttkia.grey", "confirm": True})
+            target = action.path or action.pattern or ""
+            mk = cfg["markup"]
+            console.print(f"\n  {cfg['icon']} [{mk} bold]{cfg['label']}[/]  [ttkia.white]{target}[/]")
 
             if cfg.get("confirm"):
                 if not self._confirm_action(action):
                     results.append(ActionResult(action=action, success=False,
                                                 output="Skipped by user", skipped=True))
-                    _Term.warning("Skipped")
+                    console.print("  [ttkia.warning]⚠ Skipped[/]")
                     continue
 
             result = execute_action(action, self.root)
@@ -674,13 +647,13 @@ class CodeAgent:
 
             if result.success:
                 if action.type == "read_file":
-                    _Term.success(f"Read {result.output.count(chr(10))} lines")
+                    console.print(f"  [ttkia.success]✔ Read {result.output.count(chr(10))} lines[/]")
                 elif action.type == "search":
-                    _Term.success(result.output.split('\n')[0])
+                    console.print(f"  [ttkia.success]✔ {result.output.split(chr(10))[0]}[/]")
                 else:
-                    _Term.success(result.output)
+                    console.print(f"  [ttkia.success]✔ {result.output}[/]")
             else:
-                _Term.error(result.output)
+                console.print(f"  [ttkia.error]✖ {result.output}[/]")
 
         parts = []
         for r in results:
@@ -692,8 +665,13 @@ class CodeAgent:
             )
         return '\n\n'.join(parts)
 
+    # ──────────────────────────────────────────────────────
+    # MAIN ASK LOOP (streaming without flicker)
+    # ──────────────────────────────────────────────────────
+
     def ask(self, user_query: str) -> str:
         self._iteration = 0
+
         if self.conversation_id is None:
             query = self._build_context_prefix() + f"<user_request>\n{user_query}\n</user_request>"
         else:
@@ -702,104 +680,291 @@ class CodeAgent:
         final_prose = ""
         while self._iteration < _MAX_ITERATIONS:
             self._iteration += 1
-            
-            with Spinner(f"Thinking (step {self._iteration})"):
-                try:
-                    response = self.client.code_query(
-                        query,
-                        conversation_id=self.conversation_id,
-                        title="[TTKIA Code]" if not self.conversation_id else None,
-                    )
-                except Exception as e:
-                    _Term.error(str(e))
-                    return ""
 
-            # Manejar errores del backend
-            if response.is_error:
-                _Term.error(response.error or "Backend returned an error")
+            full_text = ""
+            token_counts = {}
+            streamed_text = False
+
+            try:
+                for event in self.client.code_query_stream(
+                    query,
+                    conversation_id=self.conversation_id,
+                    title="[TTKIA Code]" if not self.conversation_id else None,
+                ):
+                    etype = event.get("type", "")
+
+                    if etype == "mcp":
+                        console.print(f"  [ttkia.info]● {event.get('content', '')}[/]")
+
+                    elif etype == "text":
+                        if not streamed_text:
+                            # Print header before first chunk
+                            console.rule(
+                                f"[ttkia.teal]💬 Response[/]"
+                                f"  [ttkia.dim](step {self._iteration})[/]",
+                                style=_TEAL,
+                            )
+                            streamed_text = True
+
+                        chunk = event.get("content", "")
+                        full_text += chunk
+                        # Raw streaming: just print chunks as they arrive
+                        sys.stdout.write(chunk)
+                        sys.stdout.flush()
+
+                    elif etype == "done":
+                        if streamed_text:
+                            sys.stdout.write("\n")
+                            sys.stdout.flush()
+                        if not self.conversation_id:
+                            self.conversation_id = event.get("conversation_id")
+                        token_counts = event.get("token_counts", {})
+                        self._total_tokens += token_counts.get("input", 0) + token_counts.get("output", 0)
+
+                    elif etype == "error":
+                        console.print(f"  [ttkia.error]✖ {event.get('content', 'Unknown error')}[/]")
+                        return ""
+
+            except Exception as e:
+                console.print(f"  [ttkia.error]✖ {e}[/]")
                 return ""
 
-            if not self.conversation_id:
-                self.conversation_id = response.conversation_id
-            self._total_tokens += response.token_usage.total
+            # Parse actions from complete response
+            prose, actions = parse_actions(full_text)
 
-            prose, actions = parse_actions(response.text)
-            if prose:
-                _Term.section("💬", "Response", _Term.WHITE)
-                print(render_markdown(prose))
+            # Render final markdown in a panel (replaces the raw stream)
+            if prose and streamed_text:
+                # Clear raw streamed text and re-render as formatted markdown
+                console.print()
+                console.print(Panel(
+                    Markdown(prose, code_theme="monokai"),
+                    border_style=_TEAL, padding=(1, 2),
+                    title="[ttkia.teal]💬 Response[/]", title_align="left",
+                    subtitle=f"[ttkia.dim]step {self._iteration}[/]", subtitle_align="right",
+                ))
+
             final_prose = prose
+            self._last_response = prose
+
+            # History
+            self._history.append({
+                "role": "assistant",
+                "summary": prose[:300] if prose else "",
+                "actions": [f"{a.type}:{a.path or a.pattern or ''}" for a in actions],
+            })
 
             if not actions:
                 return prose
 
             feedback = self._execute_actions(actions)
+
+            self._history.append({
+                "role": "system",
+                "results": feedback[:500],
+            })
+
+            history_block = self._build_history_block()
             query = (
                 f"<original_request>{user_query}</original_request>\n\n"
+                f"{history_block}"
                 f"<action_results>\n{feedback}\n</action_results>\n\n"
                 f"The original user request is shown above. "
                 f"Continue with ONLY what was requested. Do NOT add features or changes that were not asked for. "
                 f"If the task is complete, summarize what was found or done."
             )
 
-
-        _Term.error(f"Reached max iterations ({_MAX_ITERATIONS})")
+        console.print("[ttkia.error]✖ Reached max iterations[/]")
         return final_prose
 
-    def _show_banner(self):
-        print()
-        print(_Term.line("═", _Term.TEAL))
-        print()
-        print(f"  {_Term.TEAL}{_Term.BOLD}  ████████╗████████╗██╗  ██╗██╗ █████╗ {_Term.RESET}")
-        print(f"  {_Term.TEAL}{_Term.BOLD}  ╚══██╔══╝╚══██╔══╝██║ ██╔╝██║██╔══██╗{_Term.RESET}")
-        print(f"  {_Term.TEAL}{_Term.BOLD}     ██║      ██║   █████╔╝ ██║███████║{_Term.RESET}")
-        print(f"  {_Term.TEAL}{_Term.BOLD}     ██║      ██║   ██╔═██╗ ██║██╔══██║{_Term.RESET}")
-        print(f"  {_Term.TEAL}{_Term.BOLD}     ██║      ██║   ██║  ██╗██║██║  ██║{_Term.RESET}")
-        print(f"  {_Term.TEAL}{_Term.BOLD}     ╚═╝      ╚═╝   ╚═╝  ╚═╝╚═╝╚═╝  ╚═╝{_Term.RESET}")
-        print(f"  {_Term.WHITE}{_Term.BOLD}                  C O D E{_Term.RESET}")
-        print()
-        print(_Term.line("═", _Term.TEAL))
-        print()
+    # ──────────────────────────────────────────────────────
+    # ATTACH / DETACH
+    # ──────────────────────────────────────────────────────
 
-        _Term.panel("Session", [
-            f"{_Term.GREY}Project   {_Term.WHITE}{self.root.name}/{_Term.RESET}",
-            f"{_Term.GREY}Path      {_Term.DIM}{self.root}{_Term.RESET}",
-            f"{_Term.GREY}Backend   {_Term.TEAL}{self.client._base_url}{_Term.RESET}",
-        ])
-        print()
-        print(f"  {_Term.DIM}Commands:  "
-              f"{_Term.TEAL}/quit{_Term.DIM}  "
-              f"{_Term.TEAL}/new{_Term.DIM}  "
-              f"{_Term.TEAL}/tree{_Term.DIM}  "
-              f"{_Term.TEAL}/stats{_Term.DIM}  "
-              f"{_Term.TEAL}/id{_Term.DIM}  "
-              f"{_Term.TEAL}/help{_Term.RESET}")
-        print()
+    def _attach_file(self, rel_path: str) -> bool:
+        try:
+            fp = _resolve_path(rel_path, self.root)
+            if not fp.exists():
+                console.print(f"  [ttkia.error]✖ File not found: {rel_path}[/]")
+                return False
+            if not fp.is_file():
+                console.print(f"  [ttkia.error]✖ Not a file: {rel_path}[/]")
+                return False
+            if fp.stat().st_size > _MAX_READ_SIZE:
+                console.print(f"  [ttkia.error]✖ Too large: {fp.stat().st_size:,} bytes[/]")
+                return False
+            try:
+                content = fp.read_text(encoding='utf-8')
+            except UnicodeDecodeError:
+                console.print(f"  [ttkia.error]✖ Binary file: {rel_path}[/]")
+                return False
+
+            tokens = _estimate_tokens(content)
+            new_total = self._attached_tokens - _estimate_tokens(self._attached.get(rel_path, "")) + tokens
+            if new_total > self._token_budget:
+                console.print(f"  [ttkia.error]✖ Token budget exceeded: {new_total:,} / {self._token_budget:,}[/]")
+                return False
+
+            self._attached[rel_path] = content
+            self._attached_tokens = sum(_estimate_tokens(c) for c in self._attached.values())
+            lines = content.count('\n') + 1
+            console.print(f"  [ttkia.success]✔ Attached {rel_path} ({lines} lines, ~{tokens:,} tokens)[/]")
+            return True
+        except ValueError as e:
+            console.print(f"  [ttkia.error]✖ {e}[/]")
+            return False
+
+    def _detach_file(self, rel_path: str) -> bool:
+        if rel_path not in self._attached:
+            console.print(f"  [ttkia.error]✖ Not attached: {rel_path}[/]")
+            return False
+        del self._attached[rel_path]
+        self._attached_tokens = sum(_estimate_tokens(c) for c in self._attached.values())
+        console.print(f"  [ttkia.success]✔ Detached {rel_path}[/]")
+        return True
+
+    def _show_attached(self):
+        if not self._attached:
+            console.print("  [ttkia.info]● No files attached[/]")
+            return
+        table = Table(box=box.ROUNDED, border_style=_TEAL, padding=(0, 1))
+        table.add_column("📎 File", style=_WHITE)
+        table.add_column("Lines", justify="right", style=_GREY)
+        table.add_column("Tokens", justify="right", style=_GREY)
+        for path, content in self._attached.items():
+            table.add_row(path, str(content.count('\n') + 1), f"~{_estimate_tokens(content):,}")
+        table.add_section()
+        table.add_row(
+            "[ttkia.grey]Total[/]", "",
+            f"[ttkia.teal]{self._attached_tokens:,}[/] / {self._token_budget:,}"
+        )
+        console.print(table)
+
+    def _save_response(self, filename: Optional[str] = None):
+        if not self._last_response:
+            console.print("  [ttkia.warning]⚠ No response to save yet[/]")
+            return
+        if not filename:
+            from datetime import datetime
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"efestos_{ts}.md"
+        try:
+            fp = self.root / filename
+            fp.parent.mkdir(parents=True, exist_ok=True)
+            fp.write_text(self._last_response, encoding='utf-8')
+            console.print(f"  [ttkia.success]✔ Saved to {filename} ({len(self._last_response):,} chars)[/]")
+        except Exception as e:
+            console.print(f"  [ttkia.error]✖ Save failed: {e}[/]")
+
+    # ──────────────────────────────────────────────────────
+    # UI: BANNER, STATS, GOODBYE, HELP
+    # ──────────────────────────────────────────────────────
+
+    def _show_banner(self):
+        console.print()
+        console.rule(style=_TEAL)
+        console.print()
+        logo = Text(
+            "          ██████╗ ███████╗███████╗███████╗████████╗ ██████╗ ███████╗\n"
+            "         ██╔════╝ ██╔════╝██╔════╝██╔════╝╚══██╔══╝██╔═══██╗██╔════╝\n"
+            "         █████╗   █████╗  █████╗  ███████╗   ██║   ██║   ██║███████╗\n"
+            "         ██╔══╝   ██╔══╝  ██╔══╝  ╚════██║   ██║   ██║   ██║╚════██║\n"
+            "         ███████╗ ██║     ███████╗███████║   ██║   ╚██████╔╝███████║\n"
+            "         ╚══════╝ ╚═╝     ╚══════╝╚══════╝   ╚═╝    ╚═════╝ ╚══════╝"
+        )
+        console.print(logo, style=f"bold {_TEAL}", justify="center")
+        console.print()
+        console.print(
+            f"[bold {_WHITE}]powered by TTKIA[/]    [dim {_GREY}]v1.0[/]",
+            justify="center",
+        )
+        console.print()
+        console.rule(style=_TEAL)
+        console.print()
+
+        # Session panel
+        session_table = Table(show_header=False, box=None, padding=(0, 1))
+        session_table.add_column("key", style=_GREY, width=12)
+        session_table.add_column("value")
+        session_table.add_row("Project", f"[bold ttkia.white]{self.root.name}/[/]")
+        session_table.add_row("Path", f"[ttkia.dim]{self.root}[/]")
+        session_table.add_row("Backend", f"[ttkia.teal]{self.client._base_url}[/]")
+        console.print(Panel(session_table, title="[ttkia.teal]Session[/]",
+                            border_style=_TEAL, padding=(0, 1)))
+
+        # Quick reference
+        console.print()
+        ref = Table(show_header=False, box=None, padding=(0, 2))
+        ref.add_column("category", style=_GREY, width=12)
+        ref.add_column("commands")
+        ref.add_row("Session", "[ttkia.teal]/new[/]  /quit")
+        ref.add_row("Project", "[ttkia.teal]/tree[/]  /map")
+        ref.add_row("Context", "[ttkia.teal]/attach[/] <file>  /detach <file>  /attached")
+        ref.add_row("Output", "[ttkia.teal]/save[/] [file.md]")
+        ref.add_row("Info", "[ttkia.teal]/stats[/]  /id  /help")
+        console.print(Panel(ref, title="[bold ttkia.white]Quick Reference[/]",
+                            border_style=_PALE, padding=(0, 1)))
+
+        console.print()
+        console.print("  [ttkia.dim]Type a task or question to start. Use [ttkia.teal]/help[/ttkia.teal] for details.[/]")
+        console.print()
 
     def _show_stats(self):
-        _Term.panel("Session Stats", [
-            f"{_Term.GREY}Conversation  {_Term.WHITE}{self.conversation_id or '(none)'}{_Term.RESET}",
-            f"{_Term.GREY}Iterations    {_Term.WHITE}{self._iteration}{_Term.RESET}",
-            f"{_Term.GREY}Actions       {_Term.WHITE}{self._total_actions}{_Term.RESET}",
-            f"{_Term.GREY}Tokens        {_Term.WHITE}{self._total_tokens:,}{_Term.RESET}",
-        ])
+        table = Table(show_header=False, box=box.ROUNDED, border_style=_TEAL, padding=(0, 1))
+        table.add_column("key", style=_GREY, width=16)
+        table.add_column("value", style=_WHITE)
+        table.add_row("Conversation", self.conversation_id or "(none)")
+        table.add_row("Iterations", str(self._iteration))
+        table.add_row("Actions", str(self._total_actions))
+        table.add_row("Tokens used", f"{self._total_tokens:,}")
+        table.add_row("Attached", f"{len(self._attached)} files ({self._attached_tokens:,} tok)")
+        console.print(Panel(table, title="[ttkia.teal]Session Stats[/]",
+                            border_style=_TEAL))
 
     def _show_goodbye(self):
-        print()
-        if self._total_actions > 0:
-            _Term.panel("Session Summary", [
-                f"{_Term.GREY}Actions executed  {_Term.WHITE}{self._total_actions}{_Term.RESET}",
-                f"{_Term.GREY}Tokens used       {_Term.WHITE}{self._total_tokens:,}{_Term.RESET}",
-                f"{_Term.GREY}Conversation      {_Term.WHITE}{(self.conversation_id or 'n/a')[:12]}{_Term.RESET}",
-            ], _Term.TEAL)
-        print(f"\n  {_Term.TEAL}Bye! 👋{_Term.RESET}\n")
+        console.print()
+        if self._total_actions > 0 or self._total_tokens > 0:
+            table = Table(show_header=False, box=box.ROUNDED, border_style=_TEAL, padding=(0, 1))
+            table.add_column("key", style=_GREY, width=20)
+            table.add_column("value", style=_WHITE)
+            table.add_row("Actions executed", str(self._total_actions))
+            table.add_row("Tokens consumed", f"{self._total_tokens:,}")
+            table.add_row("Conversation", (self.conversation_id or "n/a")[:16])
+            console.print(Panel(table, title="[ttkia.teal]Session Summary[/]",
+                                border_style=_TEAL))
+        console.print(f"\n  [ttkia.teal]👋 See you later![/]\n")
+
+    def _show_help(self):
+        console.print()
+        for title, cmds in [
+            ("Session", [("/new", "Reset conversation and context"), ("/quit", "Exit efest(OS)")]),
+            ("Project", [("/tree", "Show project file tree"), ("/map", "Show repo map (functions, classes)")]),
+            ("Context", [("/attach <path>", "Pin file to context"), ("/detach <path>", "Remove from context"), ("/attached", "List pinned files")]),
+            ("Output", [("/save [file]", "Save last response to .md file")]),
+            ("Info", [("/stats", "Session statistics"), ("/id", "Show conversation ID")]),
+        ]:
+            table = Table(show_header=False, box=None, padding=(0, 1))
+            table.add_column("cmd", style=_TEAL, width=22)
+            table.add_column("desc", style=_GREY)
+            for cmd, desc in cmds:
+                table.add_row(cmd, desc)
+            console.print(Panel(table, title=f"[ttkia.teal]{title}[/]",
+                                border_style=_PALE, padding=(0, 1)))
+        console.print()
+        console.print("  [ttkia.dim]Tip: the agent can read, write, edit, search files and run scripts.[/]")
+        console.print("  [ttkia.dim]It also has access to MCP tools (SD-WAN, Meraki, PSIRT, People) for real-time data.[/]")
+        console.print()
+
+    # ──────────────────────────────────────────────────────
+    # INTERACTIVE LOOP
+    # ──────────────────────────────────────────────────────
 
     def run_interactive(self):
         self._show_banner()
 
         while True:
             try:
-                print()
-                user_input = input(f"  {_Term.TEAL}{_Term.BOLD}❯{_Term.RESET} ").strip()
+                console.print()
+                user_input = console.input("  [bold ttkia.teal]❯[/] ").strip()
             except (KeyboardInterrupt, EOFError):
                 self._show_goodbye()
                 break
@@ -815,30 +980,53 @@ class CodeAgent:
                 elif cmd == "/new":
                     self.conversation_id = None
                     self._iteration = 0
-                    _Term.info("New session started")
+                    self._history = []
+                    self._attached = {}
+                    self._attached_tokens = 0
+                    self._repo_map = ""
+                    self._last_response = ""
+                    console.print("  [ttkia.info]● New session started[/]")
                 elif cmd == "/tree":
-                    print()
-                    print(build_project_tree(self.root, max_depth=3))
+                    console.print()
+                    console.print(build_rich_tree(self.root, max_depth=3))
+                elif cmd == "/map":
+                    if not self._repo_map:
+                        self._repo_map = build_repo_map(self.root, max_depth=3)
+                    console.print()
+                    console.print(Syntax(self._repo_map, "markdown", theme="monokai",
+                                         padding=(1, 2), background_color=_NAVY))
                 elif cmd == "/stats":
                     self._show_stats()
                 elif cmd == "/id":
-                    _Term.info(f"Conversation: {self.conversation_id or '(none)'}")
+                    console.print(f"  [ttkia.info]● Conversation: {self.conversation_id or '(none)'}[/]")
+                elif cmd == "/attach":
+                    parts = user_input.split(maxsplit=1)
+                    if len(parts) < 2:
+                        console.print("  [ttkia.warning]⚠ Usage: /attach <file_path>[/]")
+                    else:
+                        self._attach_file(parts[1].strip())
+                elif cmd == "/detach":
+                    parts = user_input.split(maxsplit=1)
+                    if len(parts) < 2:
+                        console.print("  [ttkia.warning]⚠ Usage: /detach <file_path>[/]")
+                    else:
+                        self._detach_file(parts[1].strip())
+                elif cmd == "/attached":
+                    self._show_attached()
+                elif cmd == "/save":
+                    parts = user_input.split(maxsplit=1)
+                    filename = parts[1].strip() if len(parts) > 1 else None
+                    self._save_response(filename)
                 elif cmd == "/help":
-                    _Term.panel("Commands", [
-                        f"{_Term.TEAL}/quit{_Term.RESET}    Exit TTKIA Code",
-                        f"{_Term.TEAL}/new{_Term.RESET}     Start fresh session",
-                        f"{_Term.TEAL}/tree{_Term.RESET}    Show project structure",
-                        f"{_Term.TEAL}/stats{_Term.RESET}   Session statistics",
-                        f"{_Term.TEAL}/id{_Term.RESET}      Show conversation ID",
-                    ])
+                    self._show_help()
                 else:
-                    _Term.warning(f"Unknown command: {cmd}  →  /help")
+                    console.print(f"  [ttkia.warning]⚠ Unknown command: {cmd}  →  /help[/]")
                 continue
 
             try:
                 self.ask(user_input)
             except KeyboardInterrupt:
-                print()
-                _Term.warning("Interrupted — ready for next query")
+                console.print()
+                console.print("  [ttkia.warning]⚠ Interrupted — ready for next query[/]")
             except Exception as e:
-                _Term.error(f"{e}")
+                console.print(f"  [ttkia.error]✖ {e}[/]")

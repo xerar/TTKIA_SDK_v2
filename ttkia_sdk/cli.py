@@ -456,16 +456,15 @@ def cmd_code(args):
  
     try:
         if args.query:
-            # One-shot mode: execute query and exit
+            # One-shot mode: execute query and exit (Rich CLI, unchanged)
             query = " ".join(args.query)
             agent.ask(query)
         else:
-            # Interactive mode
-            agent.run_interactive()
+            # Interactive mode: launch efest(OS) TUI
+            from ttkia_sdk.tui import run_tui
+            run_tui(agent)
     except KeyboardInterrupt:
         print(f"\n{_C.DIM}Bye!{_C.RESET}")
-    finally:
-        client.close()
 
 # ═══════════════════════════════════════════════════════════
 # MAIN
