@@ -1,8 +1,8 @@
-# TTKIA SDK 
+# TTKIA SDK
 
 SDK oficial de Python para **TTKIA** – Telefónica Tech Knowledge Intelligence Assistant.
 
-Permite consultar la base de conocimiento de TTKIA, mantener conversaciones, obtener feedback y gestionar sesiones desde cualquier script o terminal.
+Permite consultar la base de conocimiento de TTKIA, mantener conversaciones, adjuntar ficheros y URLs, obtener feedback y gestionar sesiones desde cualquier script o terminal.
 
 ---
 
@@ -183,23 +183,27 @@ response = client.query(
 )
 ```
 
-SECTION_ATTACHMENTS = """
-### Adjuntos e imágenes
- 
-El SDK permite subir ficheros y adjuntarlos a una consulta.
-El backend los indexa en Qdrant (documentos) o los procesa con visión (imágenes).
- 
-#### Documentos (PDF, DOCX, TXT, CSV, PCAP, YAML, logs…)
- 
+---
+
+## Adjuntos: ficheros, imágenes y URLs
+
+El SDK permite adjuntar tres tipos de contenido a una conversación. El backend los procesa de forma diferente:
+
+- **Documentos**: se embeben en Qdrant como vectores de la conversación.
+- **Imágenes**: se guardan físicamente y se procesan con visión multimodal (AWS Bedrock).
+- **URLs**: el contenido se descarga, se embebe en Qdrant como referencia web.
+
+### Documentos (PDF, DOCX, TXT, CSV, PCAP, YAML, logs…)
+
+El embedding ocurre en background. `upload_attachment` espera por defecto a que termine antes de devolver, así que la query siguiente ya encuentra el contenido indexado.
+
 ```python
 with TTKIAClient() as client:
-    # 1. Crear conversación
     cid = client.create_conversation("Config Review")
- 
-    # 2. Subir fichero → devuelve metadata
+
+    # Sube y espera al embedding (status='completed')
     attachment = client.upload_attachment("/path/to/router_config.txt", cid)
- 
-    # 3. Query con el adjunto
+
     response = client.query(
         "Review this config and check if OSPF is correctly configured",
         conversation_id=cid,
@@ -207,22 +211,30 @@ with TTKIAClient() as client:
         style="detailed",
     )
     print(response.text)
- 
-    # 4. El adjunto persiste en la conversación: las siguientes
-    #    queries pueden referenciarlo sin volver a subirlo
+
+    # El adjunto persiste en la conversación: las queries siguientes
+    # pueden referenciarlo sin volver a subirlo
     r2 = client.query("What changes would you recommend?", conversation_id=cid)
 ```
- 
-#### Imágenes (PNG, JPG, WEBP, GIF, BMP)
- 
-Las imágenes se procesan con visión multimodal (AWS Bedrock).
-El usuario necesita tener cuota multimodal disponible.
- 
+
+Si no quieres bloquear esperando al embedding (p.ej. ficheros muy grandes que vas a usar más tarde):
+
+```python
+attachment = client.upload_attachment(
+    "/path/to/big.pdf", cid,
+    wait_for_embedding=False,   # devuelve inmediatamente con status='processing'
+)
+```
+
+### Imágenes (PNG, JPG, JPEG, GIF, WEBP, BMP)
+
+Las imágenes se procesan con visión multimodal. El usuario necesita tener cuota multimodal disponible.
+
 ```python
 with TTKIAClient() as client:
     cid = client.create_conversation("Network Diagram")
     attachment = client.upload_attachment("/path/to/topology.png", cid)
- 
+
     response = client.query(
         f"Analyze the network diagram in {attachment['name']} "
         "and identify the topology type and any potential issues",
@@ -231,55 +243,63 @@ with TTKIAClient() as client:
     )
     print(response.text)
 ```
- 
-#### URLs adjuntas
- 
-Sin upload previo: el backend indexa el contenido de la URL en la conversación.
- 
+
+### URLs
+
+El SDK indexa la URL vía `index_url` y la pasa en `attached_urls` (mismo flujo que el chat web).
+
+El dominio debe estar en la lista permitida del backend (cisco.com, fortinet.com, paloaltonetworks.com, microsoft.com, telefonica.com, kubernetes.io, docker.com, etc.). Si no, `index_url` devuelve lista vacía.
+
 ```python
 with TTKIAClient() as client:
     cid = client.create_conversation("CVE Research")
- 
-    response = client.query(
-        "Summarize this advisory and list affected products",
-        conversation_id=cid,
-        attached_urls=[
-            {
-                "url": "https://sec.cloudapps.cisco.com/security/center/publicationListing.x",
-                "name": "Cisco Security Advisories",
-            }
-        ],
+
+    # 1. Indexar la URL → metadata con path 'web://...'
+    url_attachments = client.index_url(
+        "https://sec.cloudapps.cisco.com/security/center/publicationListing.x",
+        cid,
     )
-    print(response.text)
+
+    if not url_attachments:
+        print("URL bloqueada (dominio no permitido)")
+    else:
+        # 2. Query con la URL en attached_urls
+        response = client.query(
+            "Summarize the main security advisory and list affected Cisco products",
+            conversation_id=cid,
+            attached_urls=url_attachments,
+        )
+        print(response.text)
 ```
- 
-#### Varios adjuntos en una query
- 
+
+### Varios adjuntos en una query
+
 ```python
 with TTKIAClient() as client:
     cid = client.create_conversation("Incident Analysis")
- 
-    # Subir múltiples ficheros
-    attachments = [
+
+    files = [
         client.upload_attachment("/logs/fw01_syslog.txt", cid),
         client.upload_attachment("/captures/traffic.pcap", cid),
         client.upload_attachment("/configs/fw01_config.txt", cid),
     ]
- 
+    urls = client.index_url("https://docs.fortinet.com/document/...", cid)
+
     response = client.query(
-        "Correlate the syslog, pcap capture, and firewall config "
+        "Correlate the syslog, pcap, firewall config and the vendor doc "
         "to identify the root cause of the connectivity drop at 14:32 UTC",
         conversation_id=cid,
-        attached_files=attachments,
+        attached_files=files,
+        attached_urls=urls,
         style="detailed",
     )
     print(response.text)
 ```
- 
-> **Nota**: El método `upload_attachment` llama a `/chat-upload` en el backend.
-> Los formatos permitidos, tamaño máximo (100 MB) y límite de ficheros (5 por
-> conversación) están definidos en el servidor.
-"""
+
+> **Nota**: Los formatos permitidos, tamaño máximo (100 MB) y límite de ficheros
+> (5 por conversación) están definidos en el servidor.
+
+---
 
 ### API asíncrona
 
@@ -391,8 +411,9 @@ response.thinking_process      # Lista de pasos del razonamiento
 | `create_conversation()` | `acreate_conversation()` | Crear nueva conversación |
 | `delete_conversation()` | `adelete_conversation()` | Eliminar conversación |
 | `send_feedback()` | `asend_feedback()` | Enviar feedback sobre una respuesta |
-| `export_conversation()` | `aexport_conversation()` | Exportar conversación como ZIP |
-| `upload_attachment()` | `aupload_attachment()` | Subir fichero y obtener metadata para `attached_files` |
+| `export_conversation()` | — | Exportar conversación como ZIP |
+| `upload_attachment()` | `aupload_attachment()` | Subir fichero (espera al embedding) |
+| `index_url()` | `aindex_url()` | Indexar una URL en la conversación |
 
 ---
 
@@ -471,7 +492,8 @@ python examples/examples.py
 # Seleccionar un ejemplo concreto
 TTKIA_EXAMPLE=conv python examples/examples.py
 TTKIA_EXAMPLE=batch python examples/examples.py
-TTKIA_EXAMPLE=feedback python examples/examples.py
+TTKIA_EXAMPLE=attach python examples/examples.py
+TTKIA_EXAMPLE=attach_url python examples/examples.py
 ```
 
 Ejemplos disponibles: `simple`, `conv`, `cot`, `web`, `errors`, `batch`,
