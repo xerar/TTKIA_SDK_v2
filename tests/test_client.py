@@ -298,3 +298,173 @@ class TestAPICalls:
             client.query("test")
         assert exc_info.value.retry_after == 30
         client.close()
+
+
+# ═══════════════════════════════════════════════════════════
+# ATTACHMENTS
+# ═══════════════════════════════════════════════════════════
+ 
+class TestAttachments:
+ 
+    @pytest.fixture
+    def upload_response(self):
+        """Respuesta estándar de /chat-upload."""
+        return {
+            "path": "/data/attachments/testuser/conv-123/router_config.txt",
+            "name": "router_config.txt",
+            "size": 512,
+            "type": "text/plain",
+            "stored_as": "embedded://conv-123/router_config.txt",
+            "status": "completed",
+            "conversation_id": "conv-123",
+        }
+ 
+    def test_upload_attachment_returns_metadata(self, upload_response, tmp_path):
+        """upload_attachment llama a /chat-upload y devuelve el metadata limpio."""
+        # Crear fichero temporal
+        f = tmp_path / "router_config.txt"
+        f.write_text("interface GigabitEthernet0/0\n ip address 10.0.0.1 255.255.255.0\n")
+ 
+        client = TTKIAClient("https://test.com", api_key="ttkia_sk_test")
+        mock_resp = _mock_http_response(upload_response)
+        client._http_sync.post = MagicMock(return_value=mock_resp)
+ 
+        result = client.upload_attachment(str(f), "conv-123")
+ 
+        # Verificar que se llamó a /chat-upload
+        call_args = client._http_sync.post.call_args
+        assert "/chat-upload" in str(call_args)
+ 
+        # Verificar metadata devuelta
+        assert result["name"] == "router_config.txt"
+        assert result["size"] == 512
+        assert result["type"] == "text/plain"
+        assert result["status"] == "completed"
+        assert "path" in result
+ 
+        client.close()
+ 
+    def test_upload_attachment_image(self, tmp_path):
+        """Imágenes también se suben con el MIME correcto."""
+        img = tmp_path / "diagram.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 50)  # PNG mínimo
+ 
+        upload_resp = {
+            "path": "/data/attachments/testuser/conv-123/diagram.png",
+            "name": "diagram.png",
+            "size": 58,
+            "type": "image/png",
+            "stored_as": "physical_file",
+            "status": "completed",
+            "conversation_id": "conv-123",
+        }
+ 
+        client = TTKIAClient("https://test.com", api_key="ttkia_sk_test")
+        mock_resp = _mock_http_response(upload_resp)
+        client._http_sync.post = MagicMock(return_value=mock_resp)
+ 
+        result = client.upload_attachment(str(img), "conv-123")
+ 
+        assert result["type"] == "image/png"
+        assert result["status"] == "completed"
+        client.close()
+ 
+    def test_query_with_attached_files(self, api_response):
+        """query() pasa attached_files en el payload JSON."""
+        attachment = {
+            "path": "/data/attachments/testuser/conv-123/config.txt",
+            "name": "config.txt",
+            "size": 512,
+            "type": "text/plain",
+            "status": "completed",
+        }
+ 
+        client = TTKIAClient("https://test.com", api_key="ttkia_sk_test")
+        mock_resp = _mock_http_response(api_response)
+        client._http_sync.post = MagicMock(return_value=mock_resp)
+ 
+        client.query(
+            "Review this config",
+            conversation_id="conv-123",
+            attached_files=[attachment],
+        )
+ 
+        call_kwargs = client._http_sync.post.call_args.kwargs
+        payload = call_kwargs.get("json", {})
+        assert payload["attached_files"] == [attachment]
+        assert payload["attached_urls"] == []
+ 
+        client.close()
+ 
+    def test_query_with_attached_urls(self, api_response):
+        """query() pasa attached_urls en el payload JSON."""
+        url_attachment = {
+            "url": "https://sec.cloudapps.cisco.com/security/center/publicationListing.x",
+            "name": "Cisco Security Advisories",
+        }
+ 
+        client = TTKIAClient("https://test.com", api_key="ttkia_sk_test")
+        mock_resp = _mock_http_response(api_response)
+        client._http_sync.post = MagicMock(return_value=mock_resp)
+ 
+        client.query(
+            "Summarize this advisory",
+            conversation_id="conv-123",
+            attached_urls=[url_attachment],
+        )
+ 
+        call_kwargs = client._http_sync.post.call_args.kwargs
+        payload = call_kwargs.get("json", {})
+        assert payload["attached_urls"] == [url_attachment]
+        assert payload["attached_files"] == []
+ 
+        client.close()
+ 
+    def test_query_default_no_attachments(self, api_response):
+        """Sin adjuntos, el payload manda listas vacías (no None)."""
+        client = TTKIAClient("https://test.com", api_key="ttkia_sk_test")
+        mock_resp = _mock_http_response(api_response)
+        client._http_sync.post = MagicMock(return_value=mock_resp)
+ 
+        client.query("What is BGP?")
+ 
+        call_kwargs = client._http_sync.post.call_args.kwargs
+        payload = call_kwargs.get("json", {})
+        assert payload["attached_files"] == []
+        assert payload["attached_urls"] == []
+ 
+        client.close()
+ 
+    def test_upload_attachment_error_propagates(self, tmp_path):
+        """Un 400 del backend se convierte en TTKIAError."""
+        f = tmp_path / "bad.xyz"
+        f.write_text("data")
+ 
+        client = TTKIAClient("https://test.com", api_key="ttkia_sk_test")
+        mock_resp = _mock_http_response(
+            {"detail": "Unsupported file type: .xyz"}, 400
+        )
+        client._http_sync.post = MagicMock(return_value=mock_resp)
+ 
+        with pytest.raises(TTKIAError):
+            client.upload_attachment(str(f), "conv-123")
+ 
+        client.close()
+ 
+    @pytest.mark.asyncio
+    async def test_aupload_attachment(self, upload_response, tmp_path):
+        """Versión async de upload_attachment."""
+        f = tmp_path / "config.txt"
+        f.write_text("interface lo\n")
+ 
+        client = TTKIAClient("https://test.com", api_key="ttkia_sk_test")
+        mock_resp = _mock_http_response(upload_response)
+        client._http.post = AsyncMock(return_value=mock_resp)
+ 
+        result = await client.aupload_attachment(str(f), "conv-123")
+ 
+        assert result["name"] == "router_config.txt"
+        assert result["status"] == "completed"
+ 
+        await client.aclose()
+ 

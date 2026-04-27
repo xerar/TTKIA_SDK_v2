@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timezone
+import mimetypes
 
 import httpx
 
@@ -290,6 +291,8 @@ class TTKIAClient:
         sources: Optional[List[str]] = None,
         teacher_mode: bool = False,
         title: Optional[str] = None,
+        attached_files: Optional[List[dict]] = None,   
+        attached_urls: Optional[List[dict]] = None,  
     ) -> QueryResponse:
         """Send a query via /query_complete and get the full response (async)."""
         payload = {
@@ -299,8 +302,8 @@ class TTKIAClient:
             "web_search": web_search,
             "teacher_mode": teacher_mode,
             "sources": sources or [],
-            "attached_files": [],
-            "attached_urls": [],
+            "attached_files": attached_files or [],  
+            "attached_urls": attached_urls or [],  
         }
         if conversation_id:
             payload["conversation_id"] = conversation_id
@@ -323,6 +326,8 @@ class TTKIAClient:
         sources: Optional[List[str]] = None,
         teacher_mode: bool = False,
         title: Optional[str] = None,
+        attached_files: Optional[List[dict]] = None,
+        attached_urls: Optional[List[dict]] = None,
     ) -> QueryResponse:
         """Send a query via /query_complete and get the full response (sync)."""
         payload = {
@@ -332,8 +337,8 @@ class TTKIAClient:
             "web_search": web_search,
             "teacher_mode": teacher_mode,
             "sources": sources or [],
-            "attached_files": [],
-            "attached_urls": [],
+            "attached_files": attached_files or [],  
+            "attached_urls": attached_urls or [],  
         }
         if conversation_id:
             payload["conversation_id"] = conversation_id
@@ -561,3 +566,71 @@ class TTKIAClient:
         )
         self._handle_error(resp)
         return FeedbackResult(**resp.json())
+
+    # ──────────────────────────────────────────────────────────
+    # ATTACHMENTS
+    # ──────────────────────────────────────────────────────────
+
+    def upload_attachment(
+        self,
+        file_path: str,
+        conversation_id: str,
+    ) -> dict:
+        """
+        Sube un fichero al backend y devuelve el metadata para usar en query().
+        
+        Args:
+            file_path: Ruta local al fichero.
+            conversation_id: ID de la conversación destino.
+        
+        Returns:
+            dict con path, name, size, type, status (para pasar en attached_files).
+        """
+        path = Path(file_path)
+        mime_type, _ = mimetypes.guess_type(str(path))
+        mime_type = mime_type or "application/octet-stream"
+
+        with open(path, "rb") as f:
+            resp = self._http_sync.post(
+                "/chat-upload",
+                files={"file": (path.name, f, mime_type)},
+                data={"conversation_id": conversation_id},
+            )
+        self._handle_error(resp)
+        data = resp.json()
+        return {
+            "path": data["path"],
+            "name": data["name"],
+            "size": data["size"],
+            "type": data["type"],
+            "status": data.get("status", "completed"),
+        }
+
+
+    async def aupload_attachment(
+        self,
+        file_path: str,
+        conversation_id: str,
+    ) -> dict:
+        """Versión async de upload_attachment."""
+        path = Path(file_path)
+        mime_type, _ = mimetypes.guess_type(str(path))
+        mime_type = mime_type or "application/octet-stream"
+
+        with open(path, "rb") as f:
+            content = f.read()
+
+        resp = await self._http.post(
+            "/chat-upload",
+            files={"file": (path.name, content, mime_type)},
+            data={"conversation_id": conversation_id},
+        )
+        self._handle_error(resp)
+        data = resp.json()
+        return {
+            "path": data["path"],
+            "name": data["name"],
+            "size": data["size"],
+            "type": data["type"],
+            "status": data.get("status", "completed"),
+        }

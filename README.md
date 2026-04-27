@@ -183,6 +183,104 @@ response = client.query(
 )
 ```
 
+SECTION_ATTACHMENTS = """
+### Adjuntos e imágenes
+ 
+El SDK permite subir ficheros y adjuntarlos a una consulta.
+El backend los indexa en Qdrant (documentos) o los procesa con visión (imágenes).
+ 
+#### Documentos (PDF, DOCX, TXT, CSV, PCAP, YAML, logs…)
+ 
+```python
+with TTKIAClient() as client:
+    # 1. Crear conversación
+    cid = client.create_conversation("Config Review")
+ 
+    # 2. Subir fichero → devuelve metadata
+    attachment = client.upload_attachment("/path/to/router_config.txt", cid)
+ 
+    # 3. Query con el adjunto
+    response = client.query(
+        "Review this config and check if OSPF is correctly configured",
+        conversation_id=cid,
+        attached_files=[attachment],
+        style="detailed",
+    )
+    print(response.text)
+ 
+    # 4. El adjunto persiste en la conversación: las siguientes
+    #    queries pueden referenciarlo sin volver a subirlo
+    r2 = client.query("What changes would you recommend?", conversation_id=cid)
+```
+ 
+#### Imágenes (PNG, JPG, WEBP, GIF, BMP)
+ 
+Las imágenes se procesan con visión multimodal (AWS Bedrock).
+El usuario necesita tener cuota multimodal disponible.
+ 
+```python
+with TTKIAClient() as client:
+    cid = client.create_conversation("Network Diagram")
+    attachment = client.upload_attachment("/path/to/topology.png", cid)
+ 
+    response = client.query(
+        f"Analyze the network diagram in {attachment['name']} "
+        "and identify the topology type and any potential issues",
+        conversation_id=cid,
+        attached_files=[attachment],
+    )
+    print(response.text)
+```
+ 
+#### URLs adjuntas
+ 
+Sin upload previo: el backend indexa el contenido de la URL en la conversación.
+ 
+```python
+with TTKIAClient() as client:
+    cid = client.create_conversation("CVE Research")
+ 
+    response = client.query(
+        "Summarize this advisory and list affected products",
+        conversation_id=cid,
+        attached_urls=[
+            {
+                "url": "https://sec.cloudapps.cisco.com/security/center/publicationListing.x",
+                "name": "Cisco Security Advisories",
+            }
+        ],
+    )
+    print(response.text)
+```
+ 
+#### Varios adjuntos en una query
+ 
+```python
+with TTKIAClient() as client:
+    cid = client.create_conversation("Incident Analysis")
+ 
+    # Subir múltiples ficheros
+    attachments = [
+        client.upload_attachment("/logs/fw01_syslog.txt", cid),
+        client.upload_attachment("/captures/traffic.pcap", cid),
+        client.upload_attachment("/configs/fw01_config.txt", cid),
+    ]
+ 
+    response = client.query(
+        "Correlate the syslog, pcap capture, and firewall config "
+        "to identify the root cause of the connectivity drop at 14:32 UTC",
+        conversation_id=cid,
+        attached_files=attachments,
+        style="detailed",
+    )
+    print(response.text)
+```
+ 
+> **Nota**: El método `upload_attachment` llama a `/chat-upload` en el backend.
+> Los formatos permitidos, tamaño máximo (100 MB) y límite de ficheros (5 por
+> conversación) están definidos en el servidor.
+"""
+
 ### API asíncrona
 
 Todos los métodos tienen su variante `async` con prefijo `a`:
@@ -294,6 +392,7 @@ response.thinking_process      # Lista de pasos del razonamiento
 | `delete_conversation()` | `adelete_conversation()` | Eliminar conversación |
 | `send_feedback()` | `asend_feedback()` | Enviar feedback sobre una respuesta |
 | `export_conversation()` | `aexport_conversation()` | Exportar conversación como ZIP |
+| `upload_attachment()` | `aupload_attachment()` | Subir fichero y obtener metadata para `attached_files` |
 
 ---
 
@@ -375,7 +474,8 @@ TTKIA_EXAMPLE=batch python examples/examples.py
 TTKIA_EXAMPLE=feedback python examples/examples.py
 ```
 
-Ejemplos disponibles: `simple`, `conv`, `cot`, `web`, `errors`, `batch`, `incident`, `feedback`, `explore`.
+Ejemplos disponibles: `simple`, `conv`, `cot`, `web`, `errors`, `batch`,
+`incident`, `feedback`, `explore`, `attach`, `attach_image`, `attach_url`.
 
 > ℹ️ El SDK no depende de python-dotenv.
 > Solo los ejemplos y herramientas de desarrollo utilizan esta librería.
