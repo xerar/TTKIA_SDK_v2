@@ -11,10 +11,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import mimetypes
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timezone
-import mimetypes
 
 import httpx
 
@@ -291,8 +292,8 @@ class TTKIAClient:
         sources: Optional[List[str]] = None,
         teacher_mode: bool = False,
         title: Optional[str] = None,
-        attached_files: Optional[List[dict]] = None,   
-        attached_urls: Optional[List[dict]] = None,  
+        attached_files: Optional[List[dict]] = None,
+        attached_urls: Optional[List[dict]] = None,
     ) -> QueryResponse:
         """Send a query via /query_complete and get the full response (async)."""
         payload = {
@@ -302,8 +303,8 @@ class TTKIAClient:
             "web_search": web_search,
             "teacher_mode": teacher_mode,
             "sources": sources or [],
-            "attached_files": attached_files or [],  
-            "attached_urls": attached_urls or [],  
+            "attached_files": attached_files or [],
+            "attached_urls": attached_urls or [],
         }
         if conversation_id:
             payload["conversation_id"] = conversation_id
@@ -337,8 +338,8 @@ class TTKIAClient:
             "web_search": web_search,
             "teacher_mode": teacher_mode,
             "sources": sources or [],
-            "attached_files": attached_files or [],  
-            "attached_urls": attached_urls or [],  
+            "attached_files": attached_files or [],
+            "attached_urls": attached_urls or [],
         }
         if conversation_id:
             payload["conversation_id"] = conversation_id
@@ -350,44 +351,42 @@ class TTKIAClient:
         data = resp.json()
         return self._parse_query_response(data, fallback_query=query)
 
-
     # ──────────────────────────────────────────────────────────
     # CODE AGENT QUERY (via /code/query, lightweight single-call)
     # ──────────────────────────────────────────────────────────
 
     def code_query(
-            self,
-            query: str,
-            *,
-            conversation_id: Optional[str] = None,
-            title: Optional[str] = None,
-        ) -> QueryResponse:
-            """Send a code agent query via /code/query (lightweight, single LLM call)."""
-            payload = {"query": query}
-            if conversation_id:
-                payload["conversation_id"] = conversation_id
-            if title:
-                payload["title"] = title
+        self,
+        query: str,
+        *,
+        conversation_id: Optional[str] = None,
+        title: Optional[str] = None,
+    ) -> QueryResponse:
+        """Send a code agent query via /code/query (lightweight, single LLM call)."""
+        payload = {"query": query}
+        if conversation_id:
+            payload["conversation_id"] = conversation_id
+        if title:
+            payload["title"] = title
 
-            resp = self._http_sync.post("/code/query", json=payload)
-            self._handle_error(resp)
-            data = resp.json()
+        resp = self._http_sync.post("/code/query", json=payload)
+        self._handle_error(resp)
+        data = resp.json()
 
-            return QueryResponse(
-                success=data.get("success", False),
-                conversation_id=data.get("conversation_id", ""),
-                message_id=data.get("message_id", ""),
-                query=query,
-                response_text=data.get("response_text", ""),
-                confidence=None,
-                token_usage=TokenUsage(
-                    input_tokens=data.get("token_counts", {}).get("input", 0),
-                    output_tokens=data.get("token_counts", {}).get("output", 0),
-                ),
-                timing=TimingInfo(raw=[]),
-                error=data.get("error"),
-            )
-
+        return QueryResponse(
+            success=data.get("success", False),
+            conversation_id=data.get("conversation_id", ""),
+            message_id=data.get("message_id", ""),
+            query=query,
+            response_text=data.get("response_text", ""),
+            confidence=None,
+            token_usage=TokenUsage(
+                input_tokens=data.get("token_counts", {}).get("input", 0),
+                output_tokens=data.get("token_counts", {}).get("output", 0),
+            ),
+            timing=TimingInfo(raw=[]),
+            error=data.get("error"),
+        )
 
     def code_query_stream(
         self,
@@ -398,23 +397,21 @@ class TTKIAClient:
     ):
         '''
         Stream a code agent query via /code/stream (SSE).
-        
+
         Yields:
             dict: Events with 'type' and 'content' keys.
                   Types: 'mcp', 'text', 'done', 'error'
         '''
-        import json
- 
         payload = {"query": query}
         if conversation_id:
             payload["conversation_id"] = conversation_id
         if title:
             payload["title"] = title
- 
+
         with self._http_sync.stream("POST", "/code/stream", json=payload) as resp:
             if resp.status_code != 200:
                 raise TTKIAError(f"Stream failed: {resp.status_code}", resp.status_code)
- 
+
             for line in resp.iter_lines():
                 if line.startswith("data: "):
                     try:
@@ -423,7 +420,6 @@ class TTKIAClient:
                     except json.JSONDecodeError:
                         continue
 
-                    
     # ──────────────────────────────────────────────────────────
     # CONVERSATIONS
     # ──────────────────────────────────────────────────────────
@@ -575,16 +571,32 @@ class TTKIAClient:
         self,
         file_path: str,
         conversation_id: str,
+        *,
+        wait_for_embedding: bool = True,
+        poll_interval: float = 2.0,
+        poll_timeout: float = 60.0,
     ) -> dict:
         """
         Sube un fichero al backend y devuelve el metadata para usar en query().
-        
+
+        Para documentos (PDF, DOCX, TXT, CSV, etc.) el backend lanza el
+        embedding en background y devuelve status='processing'. Por defecto,
+        este método espera (poll a /conversation-info) hasta que el adjunto
+        cambie a 'completed' antes de devolver.
+
+        Para imágenes (PNG, JPG, etc.) el backend devuelve status='completed'
+        inmediatamente.
+
         Args:
             file_path: Ruta local al fichero.
             conversation_id: ID de la conversación destino.
-        
+            wait_for_embedding: Si True (default), espera a que el embedding
+                                termine antes de devolver.
+            poll_interval: Segundos entre polls (default 2.0).
+            poll_timeout: Tiempo máximo de espera en segundos (default 60.0).
+
         Returns:
-            dict con path, name, size, type, status (para pasar en attached_files).
+            dict con path, name, size, type, status para pasar en attached_files.
         """
         path = Path(file_path)
         mime_type, _ = mimetypes.guess_type(str(path))
@@ -598,7 +610,7 @@ class TTKIAClient:
             )
         self._handle_error(resp)
         data = resp.json()
-        return {
+        attachment = {
             "path": data["path"],
             "name": data["name"],
             "size": data["size"],
@@ -606,11 +618,28 @@ class TTKIAClient:
             "status": data.get("status", "completed"),
         }
 
+        if wait_for_embedding and attachment["status"] == "processing":
+            deadline = time.monotonic() + poll_timeout
+            while time.monotonic() < deadline:
+                time.sleep(poll_interval)
+                conv = self.get_conversation(conversation_id)
+                for att in (conv.file_attachments or []):
+                    if att.get("name") == attachment["name"]:
+                        attachment["status"] = att.get("status", "processing")
+                        break
+                if attachment["status"] != "processing":
+                    break
+
+        return attachment
 
     async def aupload_attachment(
         self,
         file_path: str,
         conversation_id: str,
+        *,
+        wait_for_embedding: bool = True,
+        poll_interval: float = 2.0,
+        poll_timeout: float = 60.0,
     ) -> dict:
         """Versión async de upload_attachment."""
         path = Path(file_path)
@@ -627,10 +656,75 @@ class TTKIAClient:
         )
         self._handle_error(resp)
         data = resp.json()
-        return {
+        attachment = {
             "path": data["path"],
             "name": data["name"],
             "size": data["size"],
             "type": data["type"],
             "status": data.get("status", "completed"),
         }
+
+        if wait_for_embedding and attachment["status"] == "processing":
+            deadline = time.monotonic() + poll_timeout
+            while time.monotonic() < deadline:
+                await asyncio.sleep(poll_interval)
+                conv = await self.aget_conversation(conversation_id)
+                for att in (conv.file_attachments or []):
+                    if att.get("name") == attachment["name"]:
+                        attachment["status"] = att.get("status", "processing")
+                        break
+                if attachment["status"] != "processing":
+                    break
+
+        return attachment
+
+    # ──────────────────────────────────────────────────────────
+    # URL INDEXING
+    # ──────────────────────────────────────────────────────────
+
+    def index_url(
+        self,
+        url: str,
+        conversation_id: str,
+    ) -> List[dict]:
+        """
+        Indexa una URL como referencia web de la conversación vía /process-urls.
+
+        El backend descarga el contenido, lo embebe en Qdrant como referencia
+        web de la conversación, y devuelve el metadata para pasarlo en
+        attached_urls de query().
+
+        El dominio debe estar en la lista permitida del backend
+        (cisco.com, fortinet.com, paloaltonetworks.com, microsoft.com,
+        telefonica.com, kubernetes.io, docker.com, etc.). Si no, devuelve
+        lista vacía.
+
+        Args:
+            url: URL a indexar.
+            conversation_id: ID de la conversación destino (obligatorio).
+
+        Returns:
+            Lista de dicts con path ('web://...'), name, type, metadata.
+            Lista vacía si la URL fue bloqueada por seguridad.
+        """
+        resp = self._http_sync.post(
+            "/process-urls",
+            json={"query": url, "conversation_id": conversation_id},
+        )
+        self._handle_error(resp)
+        data = resp.json()
+        return data.get("attachments", [])
+
+    async def aindex_url(
+        self,
+        url: str,
+        conversation_id: str,
+    ) -> List[dict]:
+        """Versión async de index_url."""
+        resp = await self._http.post(
+            "/process-urls",
+            json={"query": url, "conversation_id": conversation_id},
+        )
+        self._handle_error(resp)
+        data = resp.json()
+        return data.get("attachments", [])

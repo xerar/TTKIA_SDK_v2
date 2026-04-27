@@ -184,7 +184,6 @@ class TestModels:
             created_at="2024-01-01T00:00:00",
             updated_at=1772621971.2031674,
         )
-        # Should be coerced to ISO string
         assert isinstance(cs.updated_at, str)
         assert "T" in cs.updated_at
 
@@ -254,7 +253,7 @@ class TestAPICalls:
                             "conversation_id": "abc-123",
                             "title": "Test conv",
                             "created_at": "2024-01-01T00:00:00",
-                            "updated_at": 1772621971.2031674,  # ← float from time.time()
+                            "updated_at": 1772621971.2031674,
                         }
                     ]
                 }
@@ -303,53 +302,13 @@ class TestAPICalls:
 # ═══════════════════════════════════════════════════════════
 # ATTACHMENTS
 # ═══════════════════════════════════════════════════════════
- 
+
 class TestAttachments:
- 
+
     @pytest.fixture
-    def upload_response(self):
-        """Respuesta estándar de /chat-upload."""
+    def upload_response_completed(self):
+        """Respuesta de /chat-upload para imagen (completed inmediato)."""
         return {
-            "path": "/data/attachments/testuser/conv-123/router_config.txt",
-            "name": "router_config.txt",
-            "size": 512,
-            "type": "text/plain",
-            "stored_as": "embedded://conv-123/router_config.txt",
-            "status": "completed",
-            "conversation_id": "conv-123",
-        }
- 
-    def test_upload_attachment_returns_metadata(self, upload_response, tmp_path):
-        """upload_attachment llama a /chat-upload y devuelve el metadata limpio."""
-        # Crear fichero temporal
-        f = tmp_path / "router_config.txt"
-        f.write_text("interface GigabitEthernet0/0\n ip address 10.0.0.1 255.255.255.0\n")
- 
-        client = TTKIAClient("https://test.com", api_key="ttkia_sk_test")
-        mock_resp = _mock_http_response(upload_response)
-        client._http_sync.post = MagicMock(return_value=mock_resp)
- 
-        result = client.upload_attachment(str(f), "conv-123")
- 
-        # Verificar que se llamó a /chat-upload
-        call_args = client._http_sync.post.call_args
-        assert "/chat-upload" in str(call_args)
- 
-        # Verificar metadata devuelta
-        assert result["name"] == "router_config.txt"
-        assert result["size"] == 512
-        assert result["type"] == "text/plain"
-        assert result["status"] == "completed"
-        assert "path" in result
- 
-        client.close()
- 
-    def test_upload_attachment_image(self, tmp_path):
-        """Imágenes también se suben con el MIME correcto."""
-        img = tmp_path / "diagram.png"
-        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 50)  # PNG mínimo
- 
-        upload_resp = {
             "path": "/data/attachments/testuser/conv-123/diagram.png",
             "name": "diagram.png",
             "size": 58,
@@ -358,113 +317,259 @@ class TestAttachments:
             "status": "completed",
             "conversation_id": "conv-123",
         }
- 
+
+    @pytest.fixture
+    def upload_response_processing(self):
+        """Respuesta de /chat-upload para documento (processing en background)."""
+        return {
+            "path": "embedded://conv-123/router_config.txt",
+            "name": "router_config.txt",
+            "size": 512,
+            "type": "text/plain",
+            "stored_as": "vector_store",
+            "status": "processing",
+            "conversation_id": "conv-123",
+        }
+
+    def test_upload_image_returns_completed(self, upload_response_completed, tmp_path):
+        """Las imágenes vuelven con status='completed' inmediatamente."""
+        img = tmp_path / "diagram.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 50)
+
         client = TTKIAClient("https://test.com", api_key="ttkia_sk_test")
-        mock_resp = _mock_http_response(upload_resp)
+        mock_resp = _mock_http_response(upload_response_completed)
         client._http_sync.post = MagicMock(return_value=mock_resp)
- 
+
         result = client.upload_attachment(str(img), "conv-123")
- 
+
+        assert result["name"] == "diagram.png"
         assert result["type"] == "image/png"
         assert result["status"] == "completed"
+        assert client._http_sync.post.call_count == 1
         client.close()
- 
+
+    def test_upload_document_polls_until_completed(self, upload_response_processing, tmp_path):
+        """Documentos en 'processing' deben pollear /conversation-info hasta 'completed'."""
+        f = tmp_path / "router_config.txt"
+        f.write_text("interface Gi0/0\n")
+
+        client = TTKIAClient("https://test.com", api_key="ttkia_sk_test")
+
+        upload_resp = _mock_http_response(upload_response_processing)
+        conv_processing = _mock_http_response({
+            "conversation_id": "conv-123",
+            "title": "Test",
+            "messages": [],
+            "file_attachments": [{"name": "router_config.txt", "status": "processing"}],
+            "web_references": [],
+        })
+        conv_completed = _mock_http_response({
+            "conversation_id": "conv-123",
+            "title": "Test",
+            "messages": [],
+            "file_attachments": [{"name": "router_config.txt", "status": "completed"}],
+            "web_references": [],
+        })
+        client._http_sync.post = MagicMock(
+            side_effect=[upload_resp, conv_processing, conv_completed]
+        )
+
+        result = client.upload_attachment(
+            str(f), "conv-123",
+            poll_interval=0.01,
+            poll_timeout=5.0,
+        )
+
+        assert result["status"] == "completed"
+        assert client._http_sync.post.call_count == 3
+        client.close()
+
+    def test_upload_skip_wait_returns_processing(self, upload_response_processing, tmp_path):
+        """Con wait_for_embedding=False no se hace poll, devuelve 'processing'."""
+        f = tmp_path / "router_config.txt"
+        f.write_text("data")
+
+        client = TTKIAClient("https://test.com", api_key="ttkia_sk_test")
+        mock_resp = _mock_http_response(upload_response_processing)
+        client._http_sync.post = MagicMock(return_value=mock_resp)
+
+        result = client.upload_attachment(
+            str(f), "conv-123",
+            wait_for_embedding=False,
+        )
+
+        assert result["status"] == "processing"
+        assert client._http_sync.post.call_count == 1
+        client.close()
+
     def test_query_with_attached_files(self, api_response):
         """query() pasa attached_files en el payload JSON."""
         attachment = {
-            "path": "/data/attachments/testuser/conv-123/config.txt",
+            "path": "embedded://conv-123/config.txt",
             "name": "config.txt",
             "size": 512,
             "type": "text/plain",
             "status": "completed",
         }
- 
+
         client = TTKIAClient("https://test.com", api_key="ttkia_sk_test")
         mock_resp = _mock_http_response(api_response)
         client._http_sync.post = MagicMock(return_value=mock_resp)
- 
+
         client.query(
             "Review this config",
             conversation_id="conv-123",
             attached_files=[attachment],
         )
- 
+
         call_kwargs = client._http_sync.post.call_args.kwargs
         payload = call_kwargs.get("json", {})
         assert payload["attached_files"] == [attachment]
         assert payload["attached_urls"] == []
- 
         client.close()
- 
+
     def test_query_with_attached_urls(self, api_response):
         """query() pasa attached_urls en el payload JSON."""
         url_attachment = {
-            "url": "https://sec.cloudapps.cisco.com/security/center/publicationListing.x",
-            "name": "Cisco Security Advisories",
+            "path": "web://https://sec.cloudapps.cisco.com/...",
+            "name": "url_abc123.txt",
+            "type": "text/plain",
+            "metadata": {"url": "https://sec.cloudapps.cisco.com/...", "title": "Cisco Advisory"},
         }
- 
+
         client = TTKIAClient("https://test.com", api_key="ttkia_sk_test")
         mock_resp = _mock_http_response(api_response)
         client._http_sync.post = MagicMock(return_value=mock_resp)
- 
+
         client.query(
             "Summarize this advisory",
             conversation_id="conv-123",
             attached_urls=[url_attachment],
         )
- 
+
         call_kwargs = client._http_sync.post.call_args.kwargs
         payload = call_kwargs.get("json", {})
         assert payload["attached_urls"] == [url_attachment]
         assert payload["attached_files"] == []
- 
         client.close()
- 
+
     def test_query_default_no_attachments(self, api_response):
-        """Sin adjuntos, el payload manda listas vacías (no None)."""
+        """Sin adjuntos, el payload manda listas vacías."""
         client = TTKIAClient("https://test.com", api_key="ttkia_sk_test")
         mock_resp = _mock_http_response(api_response)
         client._http_sync.post = MagicMock(return_value=mock_resp)
- 
+
         client.query("What is BGP?")
- 
+
         call_kwargs = client._http_sync.post.call_args.kwargs
         payload = call_kwargs.get("json", {})
         assert payload["attached_files"] == []
         assert payload["attached_urls"] == []
- 
         client.close()
- 
+
     def test_upload_attachment_error_propagates(self, tmp_path):
         """Un 400 del backend se convierte en TTKIAError."""
         f = tmp_path / "bad.xyz"
         f.write_text("data")
- 
+
         client = TTKIAClient("https://test.com", api_key="ttkia_sk_test")
         mock_resp = _mock_http_response(
             {"detail": "Unsupported file type: .xyz"}, 400
         )
         client._http_sync.post = MagicMock(return_value=mock_resp)
- 
+
         with pytest.raises(TTKIAError):
             client.upload_attachment(str(f), "conv-123")
- 
+
         client.close()
- 
-    @pytest.mark.asyncio
-    async def test_aupload_attachment(self, upload_response, tmp_path):
-        """Versión async de upload_attachment."""
-        f = tmp_path / "config.txt"
-        f.write_text("interface lo\n")
- 
+
+    def test_index_url_returns_attachments(self):
+        """index_url llama a /process-urls y devuelve attachments con path web://..."""
+        url_attachments = [
+            {
+                "path": "web://https://sec.cloudapps.cisco.com/...",
+                "name": "url_abc123.txt",
+                "type": "text/plain",
+                "metadata": {"url": "https://sec.cloudapps.cisco.com/...", "title": "Cisco Advisory"},
+            }
+        ]
+        process_resp = {
+            "query": "https://sec.cloudapps.cisco.com/...",
+            "attachments": url_attachments,
+            "security_errors": [],
+            "conversation_id": "conv-123",
+        }
+
         client = TTKIAClient("https://test.com", api_key="ttkia_sk_test")
-        mock_resp = _mock_http_response(upload_response)
+        mock_resp = _mock_http_response(process_resp)
+        client._http_sync.post = MagicMock(return_value=mock_resp)
+
+        result = client.index_url("https://sec.cloudapps.cisco.com/...", "conv-123")
+
+        assert len(result) == 1
+        assert result[0]["path"].startswith("web://")
+        # Verificar que se llamó a /process-urls
+        call_args = client._http_sync.post.call_args
+        assert "/process-urls" in str(call_args)
+        client.close()
+
+    def test_index_url_blocked_returns_empty(self):
+        """URLs de dominios no permitidos devuelven lista vacía."""
+        process_resp = {
+            "query": "https://evil.com",
+            "attachments": [],
+            "security_errors": [{"type": "domain_blocked", "url": "https://evil.com"}],
+            "conversation_id": "conv-123",
+        }
+
+        client = TTKIAClient("https://test.com", api_key="ttkia_sk_test")
+        mock_resp = _mock_http_response(process_resp)
+        client._http_sync.post = MagicMock(return_value=mock_resp)
+
+        result = client.index_url("https://evil.com", "conv-123")
+        assert result == []
+        client.close()
+
+    @pytest.mark.asyncio
+    async def test_aupload_attachment(self, upload_response_completed, tmp_path):
+        """Versión async de upload_attachment para imagen."""
+        img = tmp_path / "diagram.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 50)
+
+        client = TTKIAClient("https://test.com", api_key="ttkia_sk_test")
+        mock_resp = _mock_http_response(upload_response_completed)
         client._http.post = AsyncMock(return_value=mock_resp)
- 
-        result = await client.aupload_attachment(str(f), "conv-123")
- 
-        assert result["name"] == "router_config.txt"
+
+        result = await client.aupload_attachment(str(img), "conv-123")
+
+        assert result["name"] == "diagram.png"
         assert result["status"] == "completed"
- 
         await client.aclose()
- 
+
+    @pytest.mark.asyncio
+    async def test_aindex_url(self):
+        """Versión async de index_url."""
+        url_attachments = [
+            {
+                "path": "web://https://cisco.com/foo",
+                "name": "url_xyz.txt",
+                "type": "text/plain",
+                "metadata": {"url": "https://cisco.com/foo", "title": "Foo"},
+            }
+        ]
+        process_resp = {
+            "query": "https://cisco.com/foo",
+            "attachments": url_attachments,
+            "security_errors": [],
+            "conversation_id": "conv-123",
+        }
+
+        client = TTKIAClient("https://test.com", api_key="ttkia_sk_test")
+        mock_resp = _mock_http_response(process_resp)
+        client._http.post = AsyncMock(return_value=mock_resp)
+
+        result = await client.aindex_url("https://cisco.com/foo", "conv-123")
+
+        assert len(result) == 1
+        assert result[0]["path"].startswith("web://")
+        await client.aclose()

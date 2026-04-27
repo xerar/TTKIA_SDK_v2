@@ -8,7 +8,8 @@ Configuration priority (handled by TTKIAClient automatically):
   3. ~/.ttkia/config.json (created by: ttkia config --url ... --api-key ...)
 
 Optional:
-  - TTKIA_EXAMPLE = simple | conv | cot | web | errors | batch | incident | feedback | explore
+  - TTKIA_EXAMPLE = simple | conv | cot | web | errors | batch | incident |
+                    feedback | explore | attach | attach_image | attach_url
 """
 
 import asyncio
@@ -285,20 +286,16 @@ def example_explore():
             print(f"   • {c.conversation_id[:8]} {c.title or '(untitled)'}")
 
 
- 
 # ─────────────────────────────────────────────────────────
 # 10. DOCUMENT ATTACHMENT
 # ─────────────────────────────────────────────────────────
 def example_attachment():
     """
-    Sube un fichero y lo referencia en una query.
-    Funciona con cualquier formato soportado: PDF, DOCX, XLSX, TXT,
-    CSV, PCAP, YAML, logs, etc.
+    Sube un fichero, espera a que termine el embedding y lo referencia en una query.
+    Funciona con PDF, DOCX, XLSX, TXT, CSV, PCAP, YAML, logs, etc.
     """
-    import tempfile, os
- 
-    # Crear un fichero de texto de ejemplo (en un caso real usarías
-    # una ruta existente: "/path/to/config_backup.txt")
+    import tempfile
+
     sample_content = (
         "Router R1\n"
         "interface GigabitEthernet0/0\n"
@@ -313,18 +310,16 @@ def example_attachment():
     )
     tmp.write(sample_content)
     tmp.close()
- 
+
     try:
         with _client() as client:
-            # 1. Crear conversación explícita (necesaria para vincular adjunto)
             cid = client.create_conversation("Config Review")
             print(f"📁 Conversation: {cid}")
- 
-            # 2. Subir el fichero → obtenemos el metadata
+
+            # upload_attachment espera por defecto a que el embedding termine
             attachment = client.upload_attachment(tmp.name, cid)
             print(f"📎 Uploaded: {attachment['name']} ({attachment['size']} bytes) — {attachment['status']}")
- 
-            # 3. Query referenciando el adjunto
+
             response = client.query(
                 "Review this router config and check if OSPF is correctly configured",
                 conversation_id=cid,
@@ -334,18 +329,18 @@ def example_attachment():
             print(f"\n✅ Answer: {response.text[:400]}...")
             print(f"📊 Confidence: {response.confidence:.0%}")
             print(f"⏱️  Time: {response.timing.total:.1f}s")
- 
-            # 4. Seguimiento en la misma conversación (el adjunto persiste)
+
+            # El adjunto persiste en la conversación
             r2 = client.query(
                 "What changes would you recommend?",
                 conversation_id=cid,
             )
             print(f"\n🔄 Follow-up: {r2.text[:200]}...")
- 
+
     finally:
         os.unlink(tmp.name)
- 
- 
+
+
 # ─────────────────────────────────────────────────────────
 # 11. IMAGE ANALYSIS
 # ─────────────────────────────────────────────────────────
@@ -354,73 +349,70 @@ def example_image_attachment():
     Sube una imagen y pide análisis visual.
     Formatos soportados: PNG, JPG, JPEG, GIF, WEBP, BMP.
     Requiere que el usuario tenga cuota multimodal disponible.
+
+    Por defecto busca examples/topology.png. Si no existe, pide
+    al usuario que coloque una imagen real ahí o ajuste IMAGE_PATH.
     """
-    import tempfile, os
- 
-    # En un caso real: "/path/to/network_diagram.png"
-    # Aquí creamos un PNG mínimo válido (1x1 px) para que el ejemplo
-    # sea ejecutable sin fichero real
-    PNG_1X1 = (
-        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
-        b"\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00"
-        b"\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18"
-        b"\xd8N\x00\x00\x00\x00IEND\xaeB`\x82"
-    )
-    tmp = tempfile.NamedTemporaryFile(
-        suffix=".png", delete=False, prefix="network_diagram_"
-    )
-    tmp.write(PNG_1X1)
-    tmp.close()
- 
-    try:
-        with _client() as client:
-            cid = client.create_conversation("Network Diagram Analysis")
-            print(f"📁 Conversation: {cid}")
- 
-            attachment = client.upload_attachment(tmp.name, cid)
-            print(f"🖼️  Uploaded image: {attachment['name']} ({attachment['size']} bytes)")
- 
-            # Para imágenes el backend usa handle_multimodal (visión con Bedrock)
-            response = client.query(
-                f"Analyze the network diagram in {attachment['name']} "
-                "and identify the topology type and any potential issues",
-                conversation_id=cid,
-                attached_files=[attachment],
-            )
-            print(f"\n✅ Analysis: {response.text[:400]}...")
-            if response.is_error:
-                print(f"⚠️  Error detail: {response.error}")
- 
-    finally:
-        os.unlink(tmp.name)
- 
- 
+    IMAGE_PATH = Path(__file__).resolve().parent / "topology.png"
+
+    if not IMAGE_PATH.exists():
+        print(f"⚠️  Imagen no encontrada: {IMAGE_PATH}")
+        print("    Coloca una imagen real (diagrama de red, captura, etc.) en esa ruta")
+        print("    o edita IMAGE_PATH dentro de example_image_attachment().")
+        return
+
+    with _client() as client:
+        cid = client.create_conversation("Network Diagram Analysis")
+        print(f"📁 Conversation: {cid}")
+
+        attachment = client.upload_attachment(str(IMAGE_PATH), cid)
+        print(f"🖼️  Uploaded image: {attachment['name']} ({attachment['size']} bytes)")
+
+        response = client.query(
+            f"Analyze the network diagram in {attachment['name']} "
+            "and identify the topology type and any potential issues",
+            conversation_id=cid,
+            attached_files=[attachment],
+        )
+        print(f"\n✅ Analysis: {response.text[:400]}...")
+        if response.is_error:
+            print(f"⚠️  Error detail: {response.error}")
+
+
 # ─────────────────────────────────────────────────────────
-# 12. ATTACHED URL
+# 12. URL ATTACHMENT
 # ─────────────────────────────────────────────────────────
 def example_url_attachment():
     """
-    Adjunta una URL para que el backend la indexe en la conversación.
-    No requiere upload previo — se pasa directamente en la query.
+    Indexa una URL como referencia web de la conversación.
+
+    Mismo flujo que el chat web:
+      1. /process-urls descarga e indexa el contenido en Qdrant.
+      2. La query se envía con el resultado en attached_urls.
+
+    El dominio debe estar en la lista permitida del backend
+    (cisco.com, fortinet.com, paloaltonetworks.com, microsoft.com, etc.).
     """
     with _client() as client:
         cid = client.create_conversation("CVE Research")
         print(f"📁 Conversation: {cid}")
- 
+
+        url = "https://sec.cloudapps.cisco.com/security/center/publicationListing.x"
+        url_attachments = client.index_url(url, cid)
+
+        if not url_attachments:
+            print("⚠️  URL bloqueada (dominio no permitido o error de descarga)")
+            return
+
+        print(f"🌐 Indexed: {url} → {len(url_attachments)} reference(s)")
+
         response = client.query(
-            "Summarize the main security advisory from this URL "
-            "and tell me which Cisco products are affected",
+            "Summarize the main security advisory and list affected Cisco products",
             conversation_id=cid,
-            attached_urls=[
-                {
-                    "url": "https://sec.cloudapps.cisco.com/security/center/publicationListing.x",
-                    "name": "Cisco Security Advisories",
-                }
-            ],
+            attached_urls=url_attachments,
         )
         print(f"\n✅ Answer: {response.text[:400]}...")
-        print(f"🌐 Web sources: {len(response.webs)}")
- 
+        print(f"📊 Confidence: {response.confidence:.0%}")
 
 
 # ─────────────────────────────────────────────────────────
