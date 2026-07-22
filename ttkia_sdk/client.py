@@ -455,6 +455,9 @@ class TTKIAClient:
         return Conversation(**resp.json())
 
     async def acreate_conversation(self, title: str = "SDK Conversation") -> str:
+        # NOTA: el backend (/new-workspace) no acepta body; el título se ignora
+        # y la conversación se crea como "New Empty Workspace". Se mantiene el
+        # envío por compatibilidad: FastAPI descarta el body no declarado.
         resp = await self._http.post(
             "/new-workspace",
             json={"title": title},
@@ -464,6 +467,7 @@ class TTKIAClient:
         return data.get("conversation_id", "")
 
     def create_conversation(self, title: str = "SDK Conversation") -> str:
+        # NOTA: ver acreate_conversation — el título lo ignora el backend.
         resp = self._http_sync.post(
             "/new-workspace",
             json={"title": title},
@@ -489,10 +493,20 @@ class TTKIAClient:
         return resp.json().get("success", False)
 
     def export_conversation(self, conversation_id: str, output_path: str):
-        resp = self._http_sync.post(
-            "/export-conversation",
-            json={"conversation_id": conversation_id},
-        )
+        """
+        Exporta una conversación como ZIP.
+
+        El backend expone GET /export-conversation/{conversation_id}
+        (path param, no body).
+        """
+        resp = self._http_sync.get(f"/export-conversation/{conversation_id}")
+        self._handle_error(resp)
+        with open(output_path, "wb") as f:
+            f.write(resp.content)
+
+    async def aexport_conversation(self, conversation_id: str, output_path: str):
+        """Versión async de export_conversation."""
+        resp = await self._http.get(f"/export-conversation/{conversation_id}")
         self._handle_error(resp)
         with open(output_path, "wb") as f:
             f.write(resp.content)
@@ -535,33 +549,106 @@ class TTKIAClient:
     # FEEDBACK
     # ──────────────────────────────────────────────────────────
 
-    async def asend_feedback(
-        self, conversation_id: str, message_id: str, score: int
-    ) -> FeedbackResult:
-        resp = await self._http.post(
-            "/feedback/score",
-            json={
-                "conversation_id": conversation_id,
-                "message_id": message_id,
-                "score": score,
-            },
+    @staticmethod
+    def _build_feedback_payload(
+        conversation_id: str,
+        message_id: str,
+        score: int,
+        query: str = "",
+        answer: str = "",
+        prompt: str = "default",
+        style: str = "concise",
+    ) -> dict:
+        """
+        Construye el payload de FeedbackMessage que espera POST /feedback.
+
+        El modelo del backend exige varios campos obligatorios que el SDK no
+        siempre conoce (username, client_info, timestamps...). El backend
+        sobrescribe `username` con el usuario autenticado, por lo que se envía
+        vacío. El resto se rellena con valores neutros.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        return {
+            "query": query,
+            "answer": answer,
+            "prompt": prompt,
+            "style": style,
+            "timestamp": now,
+            "feedback": score > 0,
+            "conversation_id": conversation_id,
+            "message_id": message_id,
+            "username": "",           # el backend lo sustituye por el usuario real
+            "teacher_mode": False,
+            "selected_sources": [],
+            "retrieved_docs": [],
+            "retrieved_links": [],
+            "retrieved_webs": [],
+            "attachments": {"files": [], "urls": []},
+            "client_timestamp": now,
+            "client_timezone": "UTC",
+            "client_info": {"source": "ttkia_sdk"},
+            "inferred_environments": [],
+        }
+
+    @staticmethod
+    def _parse_feedback_result(data: dict) -> FeedbackResult:
+        """El backend devuelve {"status": "success", "message": "..."}."""
+        return FeedbackResult(
+            success=(data.get("status") == "success"),
+            message=data.get("message", ""),
         )
+
+    async def asend_feedback(
+        self,
+        conversation_id: str,
+        message_id: str,
+        score: int,
+        *,
+        query: str = "",
+        answer: str = "",
+        prompt: str = "default",
+        style: str = "concise",
+    ) -> FeedbackResult:
+        """
+        Envía feedback sobre una respuesta (async).
+
+        El endpoint real del backend es POST /feedback (main.py), que espera el
+        modelo FeedbackMessage completo. Pasa `query` y `answer` si los tienes
+        (por ejemplo desde el QueryResponse) para que el feedback quede con
+        contexto en el análisis RAG.
+        """
+        payload = self._build_feedback_payload(
+            conversation_id, message_id, score, query, answer, prompt, style
+        )
+        resp = await self._http.post("/feedback", json=payload)
         self._handle_error(resp)
-        return FeedbackResult(**resp.json())
+        return self._parse_feedback_result(resp.json())
 
     def send_feedback(
-        self, conversation_id: str, message_id: str, score: int
+        self,
+        conversation_id: str,
+        message_id: str,
+        score: int,
+        *,
+        query: str = "",
+        answer: str = "",
+        prompt: str = "default",
+        style: str = "concise",
     ) -> FeedbackResult:
-        resp = self._http_sync.post(
-            "/feedback/score",
-            json={
-                "conversation_id": conversation_id,
-                "message_id": message_id,
-                "score": score,
-            },
+        """
+        Envía feedback sobre una respuesta (sync).
+
+        El endpoint real del backend es POST /feedback (main.py), que espera el
+        modelo FeedbackMessage completo. Pasa `query` y `answer` si los tienes
+        (por ejemplo desde el QueryResponse) para que el feedback quede con
+        contexto en el análisis RAG.
+        """
+        payload = self._build_feedback_payload(
+            conversation_id, message_id, score, query, answer, prompt, style
         )
+        resp = self._http_sync.post("/feedback", json=payload)
         self._handle_error(resp)
-        return FeedbackResult(**resp.json())
+        return self._parse_feedback_result(resp.json())
 
     # ──────────────────────────────────────────────────────────
     # ATTACHMENTS
