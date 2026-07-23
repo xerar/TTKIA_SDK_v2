@@ -1,13 +1,43 @@
+# ── Python ─────────────────────────────────────────────
 __pycache__/
-.DS_Store/
 *.py[cod]
-*.egg-info/
-dist/
+*$py.class
+*.so
+.Python
 build/
-.eggs/
+dist/
 *.egg
+*.egg-info/
+.eggs/
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.tox/
+
+# ── Entornos ───────────────────────────────────────────
 .env
+.env.*
+!.env.example
 .venv/
 venv/
+ENV/
+
+# ── macOS ──────────────────────────────────────────────
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+.AppleDouble
+
+# ── Editores ───────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*~
+
+# ── TTKIA ──────────────────────────────────────────────
+# Credenciales locales del CLI, por si alguien lo copia al repo
+config.json
+*.log

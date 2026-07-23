@@ -40,6 +40,11 @@ _DEFAULT_TIMEOUT = 120.0
 _API_KEY_PREFIX = "ttkia_sk_"
 _CONFIG_FILE = Path.home() / ".ttkia" / "config.json"
 
+# Prefijo con el que main.py monta src/routes/conversation_routes.py:
+#     app.include_router(conversation_router, prefix="/conversations", ...)
+# Si se cambia el prefijo en el backend, basta con tocar esta constante.
+_CONV = "/conversations"
+
 
 def _load_config_file() -> dict:
     """Load configuration from ~/.ttkia/config.json if it exists."""
@@ -422,91 +427,191 @@ class TTKIAClient:
 
     # ──────────────────────────────────────────────────────────
     # CONVERSATIONS
+    #
+    # API REST (src/routes/conversation_routes.py):
+    #     GET    /conversations                       lista (sin mensajes)
+    #     POST   /conversations                       crear
+    #     GET    /conversations/search?q=             buscar
+    #     GET    /conversations/{id}                  conversación completa
+    #     GET    /conversations/{id}/info             + sharing_info
+    #     PATCH  /conversations/{id}                  renombrar / pin
+    #     DELETE /conversations/{id}                  borrar
+    #     GET    /conversations/{id}/export           ZIP
+    #     DELETE /conversations/{id}/messages/{mid}   borrar par Q&A
+    #
+    # Sustituyen a los antiguos /env (para listar), /conversation-info,
+    # /new-workspace, /delete-conversation, /forget, /export-conversation
+    # y /delete-qa, que ya no existen en el backend.
     # ──────────────────────────────────────────────────────────
 
     async def alist_conversations(self) -> List[ConversationSummary]:
-        resp = await self._http.post("/env")
+        """Lista de conversaciones: metadatos y contadores, sin mensajes (async)."""
+        resp = await self._http.get(_CONV)
         self._handle_error(resp)
-        data = resp.json()
-        convs = data.get("user", {}).get("history_chat", {}).get("conversations", [])
-        return [ConversationSummary(**c) for c in convs]
+        return [ConversationSummary(**c) for c in resp.json().get("conversations", [])]
 
     def list_conversations(self) -> List[ConversationSummary]:
-        resp = self._http_sync.post("/env")
+        """Lista de conversaciones: metadatos y contadores, sin mensajes (sync)."""
+        resp = self._http_sync.get(_CONV)
         self._handle_error(resp)
-        data = resp.json()
-        convs = data.get("user", {}).get("history_chat", {}).get("conversations", [])
-        return [ConversationSummary(**c) for c in convs]
+        return [ConversationSummary(**c) for c in resp.json().get("conversations", [])]
+
+    async def asearch_conversations(self, q: str) -> List[dict]:
+        """Busca en título, resumen y contenido de mensajes (async). Mínimo 2 caracteres."""
+        resp = await self._http.get(f"{_CONV}/search", params={"q": q})
+        self._handle_error(resp)
+        return resp.json().get("matches", [])
+
+    def search_conversations(self, q: str) -> List[dict]:
+        """Busca en título, resumen y contenido de mensajes (sync). Mínimo 2 caracteres."""
+        resp = self._http_sync.get(f"{_CONV}/search", params={"q": q})
+        self._handle_error(resp)
+        return resp.json().get("matches", [])
 
     async def aget_conversation(self, conversation_id: str) -> Conversation:
-        resp = await self._http.post(
-            "/conversation-info",
-            json={"conversation_id": conversation_id},
-        )
+        """Conversación completa: mensajes, adjuntos y referencias web (async)."""
+        resp = await self._http.get(f"{_CONV}/{conversation_id}")
         self._handle_error(resp)
         return Conversation(**resp.json())
 
     def get_conversation(self, conversation_id: str) -> Conversation:
-        resp = self._http_sync.post(
-            "/conversation-info",
-            json={"conversation_id": conversation_id},
-        )
+        """Conversación completa: mensajes, adjuntos y referencias web (sync)."""
+        resp = self._http_sync.get(f"{_CONV}/{conversation_id}")
         self._handle_error(resp)
         return Conversation(**resp.json())
 
-    async def acreate_conversation(self, title: str = "SDK Conversation") -> str:
-        # NOTA: el backend (/new-workspace) no acepta body; el título se ignora
-        # y la conversación se crea como "New Empty Workspace". Se mantiene el
-        # envío por compatibilidad: FastAPI descarta el body no declarado.
-        resp = await self._http.post(
-            "/new-workspace",
-            json={"title": title},
-        )
+    async def aget_conversation_info(self, conversation_id: str) -> dict:
+        """
+        Igual que aget_conversation() pero incluyendo `sharing_info` (async).
+
+        Devuelve el dict crudo: `sharing_info` no forma parte del modelo
+        Conversation y se perdería al tipar.
+        """
+        resp = await self._http.get(f"{_CONV}/{conversation_id}/info")
         self._handle_error(resp)
-        data = resp.json()
-        return data.get("conversation_id", "")
+        return resp.json()
+
+    def get_conversation_info(self, conversation_id: str) -> dict:
+        """
+        Igual que get_conversation() pero incluyendo `sharing_info` (sync).
+
+        Devuelve el dict crudo: `sharing_info` no forma parte del modelo
+        Conversation y se perdería al tipar.
+        """
+        resp = self._http_sync.get(f"{_CONV}/{conversation_id}/info")
+        self._handle_error(resp)
+        return resp.json()
+
+    async def acreate_conversation(self, title: str = "SDK Conversation") -> str:
+        """Crea una conversación vacía y devuelve su id (async)."""
+        resp = await self._http.post(_CONV, json={"title": title})
+        self._handle_error(resp)
+        return resp.json().get("conversation_id", "")
 
     def create_conversation(self, title: str = "SDK Conversation") -> str:
-        # NOTA: ver acreate_conversation — el título lo ignora el backend.
-        resp = self._http_sync.post(
-            "/new-workspace",
-            json={"title": title},
-        )
+        """Crea una conversación vacía y devuelve su id (sync)."""
+        resp = self._http_sync.post(_CONV, json={"title": title})
         self._handle_error(resp)
-        data = resp.json()
-        return data.get("conversation_id", "")
+        return resp.json().get("conversation_id", "")
+
+    async def aupdate_conversation(
+        self,
+        conversation_id: str,
+        *,
+        title: Optional[str] = None,
+        pinned: Optional[bool] = None,
+    ) -> dict:
+        """
+        Actualización parcial de una conversación: título y/o pin (async).
+
+        Solo se envían los campos indicados. No pasar ninguno da error 400.
+        """
+        payload: Dict[str, Any] = {}
+        if title is not None:
+            payload["title"] = title
+        if pinned is not None:
+            payload["pinned"] = pinned
+        if not payload:
+            raise TTKIAError("Nothing to update: pass title= and/or pinned=")
+
+        resp = await self._http.patch(f"{_CONV}/{conversation_id}", json=payload)
+        self._handle_error(resp)
+        return resp.json()
+
+    def update_conversation(
+        self,
+        conversation_id: str,
+        *,
+        title: Optional[str] = None,
+        pinned: Optional[bool] = None,
+    ) -> dict:
+        """
+        Actualización parcial de una conversación: título y/o pin (sync).
+
+        Solo se envían los campos indicados. No pasar ninguno da error 400.
+        """
+        payload: Dict[str, Any] = {}
+        if title is not None:
+            payload["title"] = title
+        if pinned is not None:
+            payload["pinned"] = pinned
+        if not payload:
+            raise TTKIAError("Nothing to update: pass title= and/or pinned=")
+
+        resp = self._http_sync.patch(f"{_CONV}/{conversation_id}", json=payload)
+        self._handle_error(resp)
+        return resp.json()
+
+    def rename_conversation(self, conversation_id: str, title: str) -> dict:
+        """Atajo sobre update_conversation() para renombrar."""
+        return self.update_conversation(conversation_id, title=title)
+
+    def pin_conversation(self, conversation_id: str, pinned: bool = True) -> dict:
+        """Atajo sobre update_conversation() para fijar/desfijar."""
+        return self.update_conversation(conversation_id, pinned=pinned)
 
     async def adelete_conversation(self, conversation_id: str) -> bool:
-        resp = await self._http.post(
-            "/delete-conversation",
-            json={"conversation_id": conversation_id},
-        )
+        """
+        Elimina una conversación: MongoDB + Qdrant + ficheros (async).
+
+        Acepta JWT de sesión o API Key con scope 'conversations'.
+        """
+        resp = await self._http.delete(f"{_CONV}/{conversation_id}")
         self._handle_error(resp)
         return resp.json().get("success", False)
 
     def delete_conversation(self, conversation_id: str) -> bool:
-        resp = self._http_sync.post(
-            "/delete-conversation",
-            json={"conversation_id": conversation_id},
-        )
+        """
+        Elimina una conversación: MongoDB + Qdrant + ficheros (sync).
+
+        Acepta JWT de sesión o API Key con scope 'conversations'.
+        """
+        resp = self._http_sync.delete(f"{_CONV}/{conversation_id}")
+        self._handle_error(resp)
+        return resp.json().get("success", False)
+
+    async def adelete_message_pair(self, conversation_id: str, message_id: str) -> bool:
+        """Borra el par pregunta-respuesta que comparte message_id (async)."""
+        resp = await self._http.delete(f"{_CONV}/{conversation_id}/messages/{message_id}")
+        self._handle_error(resp)
+        return resp.json().get("success", False)
+
+    def delete_message_pair(self, conversation_id: str, message_id: str) -> bool:
+        """Borra el par pregunta-respuesta que comparte message_id (sync)."""
+        resp = self._http_sync.delete(f"{_CONV}/{conversation_id}/messages/{message_id}")
         self._handle_error(resp)
         return resp.json().get("success", False)
 
     def export_conversation(self, conversation_id: str, output_path: str):
-        """
-        Exporta una conversación como ZIP.
-
-        El backend expone GET /export-conversation/{conversation_id}
-        (path param, no body).
-        """
-        resp = self._http_sync.get(f"/export-conversation/{conversation_id}")
+        """Exporta la conversación como ZIP con un markdown dentro (sync)."""
+        resp = self._http_sync.get(f"{_CONV}/{conversation_id}/export")
         self._handle_error(resp)
         with open(output_path, "wb") as f:
             f.write(resp.content)
 
     async def aexport_conversation(self, conversation_id: str, output_path: str):
-        """Versión async de export_conversation."""
-        resp = await self._http.get(f"/export-conversation/{conversation_id}")
+        """Exporta la conversación como ZIP con un markdown dentro (async)."""
+        resp = await self._http.get(f"{_CONV}/{conversation_id}/export")
         self._handle_error(resp)
         with open(output_path, "wb") as f:
             f.write(resp.content)
@@ -562,10 +667,13 @@ class TTKIAClient:
         """
         Construye el payload de FeedbackMessage que espera POST /feedback.
 
-        El modelo del backend exige varios campos obligatorios que el SDK no
-        siempre conoce (username, client_info, timestamps...). El backend
-        sobrescribe `username` con el usuario autenticado, por lo que se envía
-        vacío. El resto se rellena con valores neutros.
+        El modelo del backend exige campos obligatorios que el SDK no siempre
+        conoce (username, client_info, timestamps...). El backend sobrescribe
+        `username` con el usuario autenticado, por lo que se envía vacío; el
+        resto se rellena con valores neutros.
+
+        Nota: /feedback/score no existe — el router de feedback solo expone
+        endpoints de analítica (insights, confidence_by_environment).
         """
         now = datetime.now(timezone.utc).isoformat()
         return {
@@ -612,10 +720,8 @@ class TTKIAClient:
         """
         Envía feedback sobre una respuesta (async).
 
-        El endpoint real del backend es POST /feedback (main.py), que espera el
-        modelo FeedbackMessage completo. Pasa `query` y `answer` si los tienes
-        (por ejemplo desde el QueryResponse) para que el feedback quede con
-        contexto en el análisis RAG.
+        Pasa `query` y `answer` si los tienes (del QueryResponse) para que el
+        feedback quede con contexto en el análisis RAG.
         """
         payload = self._build_feedback_payload(
             conversation_id, message_id, score, query, answer, prompt, style
@@ -638,10 +744,8 @@ class TTKIAClient:
         """
         Envía feedback sobre una respuesta (sync).
 
-        El endpoint real del backend es POST /feedback (main.py), que espera el
-        modelo FeedbackMessage completo. Pasa `query` y `answer` si los tienes
-        (por ejemplo desde el QueryResponse) para que el feedback quede con
-        contexto en el análisis RAG.
+        Pasa `query` y `answer` si los tienes (del QueryResponse) para que el
+        feedback quede con contexto en el análisis RAG.
         """
         payload = self._build_feedback_payload(
             conversation_id, message_id, score, query, answer, prompt, style
@@ -668,7 +772,7 @@ class TTKIAClient:
 
         Para documentos (PDF, DOCX, TXT, CSV, etc.) el backend lanza el
         embedding en background y devuelve status='processing'. Por defecto,
-        este método espera (poll a /conversation-info) hasta que el adjunto
+        este método espera (poll a GET /conversations/{id}) hasta que el adjunto
         cambie a 'completed' antes de devolver.
 
         Para imágenes (PNG, JPG, etc.) el backend devuelve status='completed'
