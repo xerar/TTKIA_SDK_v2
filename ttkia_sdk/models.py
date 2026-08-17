@@ -31,10 +31,33 @@ class AuthenticationError(TTKIAError):
 
 
 class RateLimitError(TTKIAError):
-    """Raised when rate-limited (429)."""
+    """
+    Raised on HTTP 429.
 
-    def __init__(self, message: str, retry_after: int = 60, status_code: int = 429):
+    DOS CAUSAS DISTINTAS COMPARTEN EL CÓDIGO, y no se reintentan igual:
+
+      · Frecuencia (30 peticiones/minuto por usuario). El backend manda
+        `Retry-After`; esperar ese tiempo resuelve. `retryable` es True.
+
+      · Presupuesto agotado — de la API Key o del usuario. NO manda
+        `Retry-After`, y la ventana de gasto se mide en DÍAS. `retryable` es
+        False: reintentar cada minuto no levanta nada y cada intento cuesta
+        una agregación sobre `resources_usage` en el servidor.
+
+    `retry_after` conserva su valor y su default para no romper a nadie, pero
+    solo es significativo cuando `retryable` es True. Antes de dormir, mira
+    `retryable`.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        retry_after: int = 60,
+        status_code: int = 429,
+        retryable: bool = True,
+    ):
         self.retry_after = retry_after
+        self.retryable = retryable
         super().__init__(message, status_code)
 
 

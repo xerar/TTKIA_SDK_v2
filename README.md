@@ -177,11 +177,18 @@ response = client.query(
     style="detailed",          # Estilo de respuesta
     prompt="expert",           # Plantilla de prompt
     web_search=True,           # Búsqueda web
-    teacher_mode=True,         # Chain of Thought
+    teacher_mode=True,         # Chain of Thought (ver aviso)
     sources=["sdwan.pdf"],     # Filtrar por documentos
     title="Investigación SDWAN",  # Título para nueva conversación
 )
 ```
+
+> ⚠️ **`teacher_mode` no surte efecto con API Key.** El backend lo fuerza a
+> `False` en la ruta de API: el modo extendido enruta al modelo pesado y un
+> bucle programático lo dispararía en cada llamada. Es una política de coste
+> deliberada. El parámetro sigue en la firma —la ruta también la usa el
+> planificador de tareas, que sí lo respeta— pero desde el SDK
+> `response.thinking_process` volverá vacío. El CLI avisa si usas `--cot`.
 
 ---
 
@@ -387,11 +394,12 @@ response.token_usage.output_tokens
 response.token_usage.total
 
 # Tiempos de ejecución
-response.timing.total_seconds
-response.timing.get_step("retrieve")
-response.timing.summary()      # {"retrieve": 0.5, "textual": 2.1, ...}
+response.timing.total          # Segundos totales (propiedad, no método)
+response.timing.get("retrieve")   # Segundos de una fase concreta, o None
+response.timing.summary()      # {"retrieve": 0.5, "textual": 2.1, ..., "total": 2.9}
 
-# Chain of Thought (cuando teacher_mode=True)
+# Chain of Thought
+# ⚠️ Vacío cuando se usa API Key: ver la nota de teacher_mode más abajo.
 response.thinking_process      # Lista de pasos del razonamiento
 ```
 
@@ -420,19 +428,41 @@ response.thinking_process      # Lista de pasos del razonamiento
 ## Gestión de errores
 
 ```python
-from ttkia_sdk import TTKIAClient, TTKIAError, AuthenticationError, RateLimitError
+from ttkia_sdk import (
+    TTKIAClient, TTKIAError, AuthenticationError,
+    RateLimitError, InsufficientScopeError,
+)
 import time
 
 try:
     response = client.query("...")
 except AuthenticationError:
     print("API Key inválida, expirada o revocada – genera una nueva desde tu perfil en TTKIA")
+except InsufficientScopeError:
+    print("La API Key no tiene el scope necesario para esta operación")
 except RateLimitError as e:
-    print(f"Límite de peticiones alcanzado. Reintenta en {e.retry_after}s")
-    time.sleep(e.retry_after)
+    if e.retryable:
+        print(f"Límite de peticiones alcanzado. Reintenta en {e.retry_after}s")
+        time.sleep(e.retry_after)
+    else:
+        print(f"Presupuesto agotado: {e.message}")   # esperar no lo levanta
 except TTKIAError as e:
     print(f"Error [{e.status_code}]: {e.message}")
 ```
+
+### Los dos `429`
+
+`RateLimitError` cubre dos situaciones que **no se reintentan igual**. Mira
+siempre `retryable` antes de dormir:
+
+| `retryable` | Causa | Qué hacer |
+|---|---|---|
+| `True` | Límite de frecuencia (30 peticiones/minuto por usuario) | Esperar `retry_after` segundos y reintentar |
+| `False` | Presupuesto agotado de la API Key o del usuario | Parar. La ventana de gasto se mide en **días** |
+
+Reintentar cada minuto contra un presupuesto agotado no levanta el tope y
+cuesta una consulta de gasto en el servidor por intento. Si necesitas más
+presupuesto, pídeselo a un administrador de coste.
 
 ---
 
@@ -444,6 +474,7 @@ except TTKIAError as e:
 | `❌ No authentication configured` | Falta la API Key | `ttkia config --api-key ttkia_sk_...` |
 | `❌ Authentication failed` | Key expirada o revocada | Genera una nueva desde tu perfil en TTKIA |
 | `⏳ Rate limited` | Demasiadas peticiones | Espera el tiempo indicado y reintenta |
+| `💸 Presupuesto agotado` | Tope de gasto de la key o del usuario | Esperar no sirve: pide ampliación a un administrador de coste |
 | Timeout en respuestas | Consulta compleja o red lenta | `ttkia config --timeout 180` |
 | Error de SSL | Certificado autofirmado | `ttkia config --no-ssl` (solo entornos internos) |
 | `Maximum 5 active API Keys` | Has alcanzado el límite | Revoca alguna key antigua desde tu perfil |

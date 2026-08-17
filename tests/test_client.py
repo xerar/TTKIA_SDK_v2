@@ -242,27 +242,27 @@ class TestAPICalls:
         client.close()
 
     def test_list_conversations_float_dates(self):
-        """Regression: updated_at as float from MongoDB should not crash."""
+        """Regression: updated_at as float from MongoDB should not crash.
+
+        El mock va sobre GET, no sobre POST: desde que las conversaciones se
+        alinearon con el router REST, list_conversations() hace
+        GET /conversations y devuelve la clave "conversations". Mientras el
+        mock siguió puesto en POST, httpx intentaba resolver test.com de
+        verdad y el test fallaba por DNS, no por lo que pretendía comprobar.
+        """
         client = TTKIAClient("https://test.com", api_key="ttkia_sk_test")
-        env_data = {
-            "environment": ["test"],
-            "user": {
-                "history_chat": {
-                    "conversations": [
-                        {
-                            "conversation_id": "abc-123",
-                            "title": "Test conv",
-                            "created_at": "2024-01-01T00:00:00",
-                            "updated_at": 1772621971.2031674,
-                        }
-                    ]
+        list_data = {
+            "conversations": [
+                {
+                    "conversation_id": "abc-123",
+                    "title": "Test conv",
+                    "created_at": "2024-01-01T00:00:00",
+                    "updated_at": 1772621971.2031674,
                 }
-            },
-            "prompts": [],
-            "styles": [],
+            ]
         }
-        mock_resp = _mock_http_response(env_data)
-        client._http_sync.post = MagicMock(return_value=mock_resp)
+        mock_resp = _mock_http_response(list_data)
+        client._http_sync.get = MagicMock(return_value=mock_resp)
 
         convs = client.list_conversations()
         assert len(convs) == 1
@@ -296,6 +296,45 @@ class TestAPICalls:
         with pytest.raises(RateLimitError) as exc_info:
             client.query("test")
         assert exc_info.value.retry_after == 30
+        # Con cabecera: esperar resuelve.
+        assert exc_info.value.retryable is True
+        client.close()
+
+    def test_budget_exhausted_is_not_retryable(self):
+        """429 sin Retry-After es un tope de gasto, no un rate limit.
+
+        El backend manda la cabecera en el límite de frecuencia y NO la manda
+        cuando se agota el presupuesto de la clave o del usuario. La ventana
+        de gasto se mide en días, así que reintentar no levanta nada: solo
+        cuesta una agregación sobre resources_usage por intento.
+        """
+        client = TTKIAClient("https://test.com", api_key="ttkia_sk_test")
+        mock_resp = _mock_http_response(
+            {"detail": "API Key budget exhausted: $10.00 of $10.00"}, 429
+        )
+        mock_resp.headers = {}
+        client._http_sync.post = MagicMock(return_value=mock_resp)
+
+        with pytest.raises(RateLimitError) as exc_info:
+            client.query("test")
+        assert exc_info.value.retryable is False
+        client.close()
+
+    def test_retry_after_http_date_stays_retryable(self):
+        """Retry-After admite fecha HTTP además de segundos.
+
+        No se adivina el valor —se cae al default— pero la presencia de la
+        cabecera sigue significando que es un límite de frecuencia.
+        """
+        client = TTKIAClient("https://test.com", api_key="ttkia_sk_test")
+        mock_resp = _mock_http_response({"detail": "Slow down"}, 429)
+        mock_resp.headers = {"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"}
+        client._http_sync.post = MagicMock(return_value=mock_resp)
+
+        with pytest.raises(RateLimitError) as exc_info:
+            client.query("test")
+        assert exc_info.value.retryable is True
+        assert exc_info.value.retry_after == 60
         client.close()
 
 
@@ -349,7 +388,12 @@ class TestAttachments:
         client.close()
 
     def test_upload_document_polls_until_completed(self, upload_response_processing, tmp_path):
-        """Documentos en 'processing' deben pollear /conversation-info hasta 'completed'."""
+        """Documentos en 'processing' deben pollear hasta 'completed'.
+
+        El upload es POST /chat-upload; el poll es GET /conversations/{id}.
+        Son dos verbos distintos y necesitan dos mocks distintos: con ambos
+        en POST, el poll salía a la red real.
+        """
         f = tmp_path / "router_config.txt"
         f.write_text("interface Gi0/0\n")
 
@@ -370,8 +414,9 @@ class TestAttachments:
             "file_attachments": [{"name": "router_config.txt", "status": "completed"}],
             "web_references": [],
         })
-        client._http_sync.post = MagicMock(
-            side_effect=[upload_resp, conv_processing, conv_completed]
+        client._http_sync.post = MagicMock(return_value=upload_resp)
+        client._http_sync.get = MagicMock(
+            side_effect=[conv_processing, conv_completed]
         )
 
         result = client.upload_attachment(
@@ -381,7 +426,8 @@ class TestAttachments:
         )
 
         assert result["status"] == "completed"
-        assert client._http_sync.post.call_count == 3
+        assert client._http_sync.post.call_count == 1   # el upload
+        assert client._http_sync.get.call_count == 2    # processing -> completed
         client.close()
 
     def test_upload_skip_wait_returns_processing(self, upload_response_processing, tmp_path):

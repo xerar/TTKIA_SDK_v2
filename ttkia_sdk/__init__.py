@@ -17,7 +17,7 @@ Usage:
     print(response.text)
 """
 
-__version__ = "2.4.0"
+__version__ = "2.5.0"
 
 from ttkia_sdk.client import TTKIAClient
 from ttkia_sdk.models import (
@@ -32,6 +32,7 @@ from ttkia_sdk.models import (
     AuthenticationError,
     RateLimitError,
     NotFoundError,
+    InsufficientScopeError,
 )
 
 __all__ = [
@@ -47,4 +48,5 @@ __all__ = [
     "AuthenticationError",
     "RateLimitError",
     "NotFoundError",
+    "InsufficientScopeError",
 ]

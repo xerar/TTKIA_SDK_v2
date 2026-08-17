@@ -178,14 +178,26 @@ class TTKIAClient:
         await self.aclose()
 
     def close(self):
+        # get_running_loop y no get_event_loop: el segundo CREA un loop cuando
+        # no hay ninguno, con DeprecationWarning desde 3.10 y error desde 3.14.
+        # Como close() se llama desde código síncrono, ese era el caso normal.
         self._http_sync.close()
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                loop.create_task(self._http.aclose())
-            else:
-                loop.run_until_complete(self._http.aclose())
+            loop = asyncio.get_running_loop()
         except RuntimeError:
+            loop = None
+
+        if loop is not None:
+            # Dentro de un loop en marcha no se puede bloquear: se agenda.
+            loop.create_task(self._http.aclose())
+            return
+
+        try:
+            asyncio.run(self._http.aclose())
+        except RuntimeError:
+            # Cerrar el pool es best-effort: si el entorno no deja abrir un
+            # loop, el cliente síncrono ya está cerrado y no se rompe la salida
+            # del programa por esto.
             pass
 
     async def aclose(self):
@@ -215,8 +227,22 @@ class TTKIAClient:
         if code == 404:
             raise NotFoundError(str(msg), code)
         if code == 429:
-            retry = int(resp.headers.get("Retry-After", "60"))
-            raise RateLimitError(str(msg), retry_after=retry, status_code=code)
+            # La cabecera es lo que distingue las dos causas del 429: el rate
+            # limit la manda, los topes de gasto no. Ver RateLimitError.
+            header = resp.headers.get("Retry-After")
+            try:
+                retry = int(header) if header else 60
+            except ValueError:
+                # Retry-After admite fecha HTTP además de segundos. Si llega
+                # así, no se adivina: se cae al default y se sigue tratando
+                # como reintentable, que es lo que la cabecera significa.
+                retry = 60
+            raise RateLimitError(
+                str(msg),
+                retry_after=retry,
+                status_code=code,
+                retryable=header is not None,
+            )
         raise TTKIAError(str(msg), code)
 
     # ──────────────────────────────────────────────────────────
@@ -300,7 +326,16 @@ class TTKIAClient:
         attached_files: Optional[List[dict]] = None,
         attached_urls: Optional[List[dict]] = None,
     ) -> QueryResponse:
-        """Send a query via /query_complete and get the full response (async)."""
+        """
+        Send a query via /query_complete and get the full response (async).
+
+        ⚠️ `teacher_mode` NO surte efecto con autenticación por API Key. El
+        backend lo fuerza a False en esta ruta: el modo extendido enruta al
+        modelo pesado y un bucle programático lo dispararía en cada llamada.
+        Es política de coste deliberada, no un fallo. El parámetro sigue en la
+        firma porque la ruta también la usa el scheduler, que sí lo respeta.
+        Con una clave, `thinking_process` volverá vacío.
+        """
         payload = {
             "query": query,
             "prompt": prompt,
@@ -335,7 +370,13 @@ class TTKIAClient:
         attached_files: Optional[List[dict]] = None,
         attached_urls: Optional[List[dict]] = None,
     ) -> QueryResponse:
-        """Send a query via /query_complete and get the full response (sync)."""
+        """
+        Send a query via /query_complete and get the full response (sync).
+
+        ⚠️ `teacher_mode` NO surte efecto con autenticación por API Key. Ver
+        la nota en `aquery`: el backend lo fuerza a False en esta ruta y
+        `thinking_process` volverá vacío.
+        """
         payload = {
             "query": query,
             "prompt": prompt,

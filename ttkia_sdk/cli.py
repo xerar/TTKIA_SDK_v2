@@ -242,10 +242,19 @@ def cmd_ask(args):
                     print(f"    {icon} {s.title or s.source}")
 
             # Thinking process
-            if args.cot and response.thinking_process:
-                print(f"\n{_C.DIM}  Thinking:{_C.RESET}")
-                for step in response.thinking_process:
-                    print(f"    💭 {step[:120]}")
+            if args.cot:
+                if response.thinking_process:
+                    print(f"\n{_C.DIM}  Thinking:{_C.RESET}")
+                    for step in response.thinking_process:
+                        print(f"    💭 {step[:120]}")
+                else:
+                    # El backend fuerza teacher_mode=False en /query_complete
+                    # cuando la autenticacion es por API Key. Sin este aviso el
+                    # usuario cree que el modelo no razono, no que no se pidio.
+                    print(
+                        f"\n{_C.DIM}  (--cot ignorado: el modo extendido no esta "
+                        f"disponible por API Key){_C.RESET}"
+                    )
 
             # Follow-ups
             _print_follow_ups(response)
@@ -255,7 +264,11 @@ def cmd_ask(args):
             print(f"{_C.RED}❌ Authentication failed. Run: ttkia config --api-key ...{_C.RESET}")
             sys.exit(1)
         except RateLimitError as e:
-            print(f"{_C.YELLOW}⏳ Rate limited. Retry in {e.retry_after}s{_C.RESET}")
+            if e.retryable:
+                print(f"{_C.YELLOW}⏳ Rate limited. Retry in {e.retry_after}s{_C.RESET}")
+            else:
+                # Tope de gasto: la ventana es de días, no de segundos.
+                print(f"{_C.YELLOW}💸 Presupuesto agotado: {e.message}{_C.RESET}")
             sys.exit(1)
         except TTKIAError as e:
             print(f"{_C.RED}❌ [{e.status_code}] {e.message}{_C.RESET}")
@@ -376,6 +389,11 @@ def cmd_chat(args):
                 print()
 
             except RateLimitError as e:
+                if not e.retryable:
+                    # Presupuesto agotado. Dormir no lo levanta: la ventana de
+                    # gasto se mide en días. Se sale en vez de fingir espera.
+                    print(f"\n{_C.YELLOW}💸 Presupuesto agotado: {e.message}{_C.RESET}\n")
+                    break
                 print(f"\n{_C.YELLOW}⏳ Rate limited. Wait {e.retry_after}s{_C.RESET}\n")
                 time.sleep(e.retry_after)
             except AuthenticationError:
@@ -479,7 +497,11 @@ def main():
     p.add_argument("-s", "--style", default="concise", help="Response style (default: concise)")
     p.add_argument("-p", "--prompt", default="default", help="Prompt template (default: default)")
     p.add_argument("--web", action="store_true", help="Enable web search")
-    p.add_argument("--cot", action="store_true", help="Enable Chain of Thought")
+    p.add_argument(
+        "--cot",
+        action="store_true",
+        help="Enable Chain of Thought (ignorado por el backend con API Key)",
+    )
     p.add_argument("--sources", action="store_true", help="Show source documents")
     p.add_argument("--tools", action="store_true", help="Show MCP tools detail")
     p.add_argument("--json", action="store_true", help="Output JSON")
