@@ -17,7 +17,7 @@ Usage:
     print(response.text)
 """
 
-__version__ = "2.5.0"
+__version__ = "2.6.0"
 
 from ttkia_sdk.client import TTKIAClient
 from ttkia_sdk.models import (
@@ -26,6 +26,7 @@ from ttkia_sdk.models import (
     ConversationMessage,
     ConversationSummary,
     Source,
+    Citation,
     MCPToolResult,
     HealthStatus,
     TTKIAError,
@@ -42,6 +43,7 @@ __all__ = [
     "ConversationMessage",
     "ConversationSummary",
     "Source",
+    "Citation",
     "MCPToolResult",
     "HealthStatus",
     "TTKIAError",

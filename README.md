@@ -370,25 +370,51 @@ client.export_conversation(response.conversation_id, "sesion.zip")
 
 ## Objeto de respuesta (`QueryResponse`)
 
+Cada parte de la respuesta va en su propio campo. **La valoración nunca va dentro
+del texto**: son `confidence` y `evaluation`.
+
 ```python
 response = client.query("¿Qué es OSPF?")
 
-# Contenido
-response.text                  # La respuesta generada
-response.confidence            # Confianza: 0.0 – 1.0
+# Respuesta
+response.text                  # La respuesta generada (markdown, con marcas de cita)
+str(response)                  # Igual que response.text
+response.summary()             # "[85%] primeros 200 caracteres…" — para logs
+
+# Valoración de la respuesta (campos aparte)
+response.confidence            # 0.0 – 1.0
+response.evaluation            # Explicación del evaluador sobre la respuesta
+                               # (antes `recommended_response`, obsoleto)
+
+# Estado
 response.is_error              # True si hubo error
 response.error                 # Mensaje de error (si aplica)
 
 # Identificadores (para seguimiento y feedback)
-response.conversation_id       # ID de conversación
-response.message_id            # ID del mensaje
+response.conversation_id
+response.message_id
 
-# Fuentes
-response.sources               # Todas las fuentes (docs + web)
-response.docs                  # Solo fuentes documentales
-response.webs                  # Solo fuentes web
+# Fuentes: objetos Source con title, source, page, section_path, author, url, relevance
+response.docs                  # Documentación indexada        → [doc:N]
+response.links                 # Obsoleto: siempre vacío desde el backend 6.4.1
+response.webs                  # Resultados de búsqueda web     → [web:N]
+response.sources               # docs + links + webs
+source.label                   # "Documento — p. 12 — 5.1 Physical Devices"
 
-# Tokens consumidos
+# Citas
+response.citations             # [Citation(kind, index, source)] en orden de aparición
+response.cited_sources         # Solo las fuentes citadas en el texto
+response.text_plain            # Texto con [doc:3] → [3]
+response.text_with_references()  # Texto + apartado "Referencias" (formato del Word de TTKIA)
+
+# Resultados adicionales
+response.mcp_tools             # Consultas a sistemas: name, status, args, result, error
+response.artifacts             # Artifacts generados (cuadros, paneles)
+response.attachments           # Documentos generados (Word, Excel…) adjuntos a la conversación
+response.follow_ups            # Preguntas sugeridas
+response.reasoning             # Razonamiento del modelo (backend ≥ 6.4.1)
+
+# Consumo
 response.token_usage.input_tokens
 response.token_usage.output_tokens
 response.token_usage.total
@@ -398,10 +424,32 @@ response.timing.total          # Segundos totales (propiedad, no método)
 response.timing.get("retrieve")   # Segundos de una fase concreta, o None
 response.timing.summary()      # {"retrieve": 0.5, "textual": 2.1, ..., "total": 2.9}
 
-# Chain of Thought
-# ⚠️ Vacío cuando se usa API Key: ver la nota de teacher_mode más abajo.
-response.thinking_process      # Lista de pasos del razonamiento
+# Razonamiento del modelo (backend >= 6.4.1)
+response.reasoning             # Texto del razonamiento, o None
+response.thinking_process      # Obsoleto: marcadores de fase de backends anteriores
 ```
+
+### Marcas de cita
+
+El texto trae marcas `[doc:N]`, `[link:N]` y `[web:N]`. `N` empieza en 1 y apunta
+a la posición `N` de `docs`, `links` o `webs` de la **misma** respuesta. Si vas a
+mostrar la respuesta fuera de TTKIA, usa `text_with_references()` o `text_plain`
+en lugar de `text`.
+
+### Cambios en 2.6.0
+
+- `str(response)` devuelve el texto completo; antes devolvía `"[85%] "` más los
+  primeros 200 caracteres. El resumen está ahora en `response.summary()`.
+- `recommended_response` pasa a `evaluation`. El nombre antiguo sigue funcionando
+  con aviso de obsolescencia.
+- `links` queda obsoleto en la respuesta de una consulta (venía de las webs
+  descargadas por entorno, ya retiradas) y a partir del backend 6.4.1 llega vacío.
+  En el historial sí se mantiene: los informes de Deep Research citan sus páginas
+  web como `[link:N]`. Las fuentes conservan `url`, `page`, `section_path`,
+  `author` y la relevancia (`_score`).
+- Nuevos: `citations`, `cited_sources`, `text_plain`, `text_with_references()`,
+  `artifacts`, `attachments`, `reasoning`, `MCPToolResult.error`.
+- Los mensajes de `get_conversation()` conservan `docs`, `links`, `webs` y `evaluation`.
 
 ---
 
@@ -527,7 +575,7 @@ TTKIA_EXAMPLE=attach python examples/examples.py
 TTKIA_EXAMPLE=attach_url python examples/examples.py
 ```
 
-Ejemplos disponibles: `simple`, `conv`, `cot`, `web`, `errors`, `batch`,
+Ejemplos disponibles: `simple`, `conv`, `cot`, `web`, `refs` (citas y referencias), `errors`, `batch`,
 `incident`, `feedback`, `explore`, `attach`, `attach_image`, `attach_url`.
 
 > ℹ️ El SDK no depende de python-dotenv.

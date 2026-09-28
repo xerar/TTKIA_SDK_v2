@@ -264,9 +264,14 @@ class TTKIAClient:
                 mcp_tools.append(MCPToolResult(
                     name=t.get("name", ""),
                     status=t.get("status", ""),
-                    args=t.get("args", {}),
+                    args=t.get("args") or {},
                     result=t.get("result"),
+                    error=t.get("error"),
                 ))
+
+        def _sources(key: str) -> List[Source]:
+            return [Source.model_validate(x) for x in (data.get(key) or [])
+                    if isinstance(x, (dict, str))]
 
         return QueryResponse(
             success=data.get("success", False),
@@ -275,7 +280,7 @@ class TTKIAClient:
             query=data.get("query", fallback_query),
             response_text=data.get("response_text", ""),
             confidence=data.get("confidence"),
-            recommended_response=data.get("recommended_response"),
+            evaluation=data.get("evaluation", data.get("recommended_response")),
             query_extended=data.get("query_extended"),
             token_usage=TokenUsage(
                 input_tokens=data.get("token_counts", {}).get("input", 0),
@@ -283,12 +288,15 @@ class TTKIAClient:
             ),
             timing=TimingInfo(raw=timing_raw),
             inferred_environments=data.get("inferred_environments", []),
-            docs=[Source(**d) for d in data.get("docs", [])],
-            webs=[Source(**w) for w in data.get("webs", [])],
-            links=data.get("links", []),
-            thinking_process=data.get("thinking_process", []),
+            docs=_sources("docs"),
+            links=_sources("links"),
+            webs=_sources("webs"),
+            reasoning=data.get("reasoning") or "",
+            thinking_process=[t for t in (data.get("thinking_process") or []) if t],
             mcp_tools=mcp_tools,
-            follow_ups=data.get("follow_ups", []),
+            follow_ups=data.get("follow_ups") or [],
+            artifacts=data.get("artifacts") or [],
+            attachments=data.get("attachments") or [],
             error=data.get("error"),
         )
 

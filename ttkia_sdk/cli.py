@@ -189,6 +189,7 @@ def cmd_ask(args):
                     "query": response.query,
                     "text": response.text,
                     "confidence": response.confidence,
+                    "evaluation": response.evaluation,
                     "conversation_id": response.conversation_id,
                     "message_id": response.message_id,
                     "tokens": {
@@ -197,9 +198,18 @@ def cmd_ask(args):
                     },
                     "timing": response.timing.summary(),
                     "sources": [
-                        {"title": s.title, "source": s.source, "web": s.is_web}
+                        {"title": s.title, "source": s.source, "url": s.url,
+                         "page": s.page, "section_path": s.section_path,
+                         "web": s.is_web}
                         for s in response.sources
                     ],
+                    "citations": [
+                        {"marker": c.marker,
+                         "title": c.source.title if c.source else None}
+                        for c in response.citations
+                    ],
+                    "artifacts": response.artifacts,
+                    "attachments": response.attachments,
                     "mcp_tools": [
                         {"name": t.name, "status": t.status, "args": t.args}
                         for t in response.mcp_tools
@@ -239,11 +249,15 @@ def cmd_ask(args):
                 print(f"\n{_C.DIM}  Sources:{_C.RESET}")
                 for s in response.sources:
                     icon = "🌐" if s.is_web else "📄"
-                    print(f"    {icon} {s.title or s.source}")
+                    print(f"    {icon} {s.label}")
 
-            # Thinking process
+            # Razonamiento: backend >= 6.4.1 lo manda en `reasoning`; los
+            # anteriores solo mandan marcadores de fase en thinking_process.
             if args.cot:
-                if response.thinking_process:
+                if response.reasoning:
+                    print(f"\n{_C.DIM}  Thinking:{_C.RESET}")
+                    print(f"    💭 {response.reasoning}")
+                elif response.thinking_process:
                     print(f"\n{_C.DIM}  Thinking:{_C.RESET}")
                     for step in response.thinking_process:
                         print(f"    💭 {step[:120]}")
@@ -381,7 +395,7 @@ def cmd_chat(args):
                 if getattr(args, '_show_sources', False) and response.sources:
                     for s in response.sources:
                         icon = "🌐" if s.is_web else "📄"
-                        print(f"  {_C.DIM}{icon} {s.title or s.source}{_C.RESET}")
+                        print(f"  {_C.DIM}{icon} {s.label}{_C.RESET}")
 
                 # Follow-ups
                 _print_follow_ups(response)

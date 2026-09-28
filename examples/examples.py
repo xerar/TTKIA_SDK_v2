@@ -8,7 +8,7 @@ Configuration priority (handled by TTKIAClient automatically):
   3. ~/.ttkia/config.json (created by: ttkia config --url ... --api-key ...)
 
 Optional:
-  - TTKIA_EXAMPLE = simple | conv | cot | web | errors | batch | incident |
+  - TTKIA_EXAMPLE = simple | conv | cot | web | refs | errors | batch | incident |
                     feedback | explore | attach | attach_image | attach_url
 """
 
@@ -94,7 +94,11 @@ def example_chain_of_thought():
             style="detailed",
         )
         print(f"Answer: {response.text[:300]}...")
-        if response.thinking_process:
+        # `reasoning` llega desde el backend 6.4.1; antes solo había marcadores
+        # de fase en `thinking_process`.
+        if response.reasoning:
+            print(f"\n🧠 Reasoning:\n{response.reasoning[:600]}...")
+        elif response.thinking_process:
             print(f"\n🧠 Thinking steps: {len(response.thinking_process)}")
             for i, step in enumerate(response.thinking_process[:3], 1):
                 print(f"   Step {i}: {step[:100]}...")
@@ -113,7 +117,25 @@ def example_web_search():
         print(f"Answer: {response.text[:300]}...")
         print(f"\n🌐 Web sources: {len(response.webs)}")
         for web in response.webs:
-            print(f"   • {web.title}: {web.source}")
+            print(f"   • {web.title}: {web.url}")
+
+
+# ─────────────────────────────────────────────────────────
+# 4b. CITAS Y REFERENCIAS (texto listo para mostrar fuera de TTKIA)
+# ─────────────────────────────────────────────────────────
+def example_references():
+    with _client() as client:
+        response = client.query("¿Qué modelos Catalyst soporta el servicio SD-WAN?")
+        # El texto trae marcas [doc:N]/[web:N]; aquí se resuelven.
+        for c in response.citations:
+            print(f"   {c.marker} → {c.source.label if c.source else '(sin fuente)'}")
+        print()
+        # Texto con [N] y apartado de Referencias, mismo formato que el Word de TTKIA
+        print(response.text_with_references())
+        # La valoración va aparte, nunca dentro del texto
+        print(f"\n📊 Confianza: {response.confidence or 0:.0%}")
+        if response.evaluation:
+            print(f"📝 Evaluación: {response.evaluation}")
 
 
 # ─────────────────────────────────────────────────────────
@@ -423,6 +445,7 @@ EXAMPLES = {
     "conv": example_conversation,
     "cot": example_chain_of_thought,
     "web": example_web_search,
+    "refs": example_references,
     "errors": example_error_handling,
     "incident": example_incident_analysis,
     "feedback": example_feedback,

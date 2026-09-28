@@ -619,3 +619,183 @@ class TestAttachments:
         assert len(result) == 1
         assert result[0]["path"].startswith("web://")
         await client.aclose()
+
+# ═══════════════════════════════════════════════════════════
+# CONTRATO REAL DE /query_complete (backend 6.4.0 y 6.4.1)
+# ═══════════════════════════════════════════════════════════
+
+def _payload_640():
+    """Respuesta tal como la emite el backend 6.4.0: metadatos crudos de Qdrant,
+    `recommended_response` para la valoración, `links` como dicts (lo que
+    llega de verdad aunque el backend lo declare List[str]) y webs con url."""
+    return {
+        "success": True,
+        "conversation_id": "conv-1",
+        "message_id": "msg-1",
+        "query": "¿Qué modelos Catalyst soporta el servicio?",
+        "response_text": (
+            "Los modelos soportados son C8300 y C1111 [doc:1][doc:2]. "
+            "Ver también la guía [link:1] y el aviso [web:1]. Repetida [doc:1]."
+        ),
+        "confidence": 0.9,
+        "recommended_response": "La respuesta cita la tabla de modelos del DTS.",
+        "query_extended": "¿Qué modelos Catalyst soporta el servicio?",
+        "timing": {"preprocessing": 1.2, "finalize": 0.1},
+        "token_counts": {"input": 1000, "output": 300},
+        "inferred_environments": ["SCN_Tech"],
+        "docs": [
+            {"title": "01_DTS_Viptela.pdf", "source": "01_DTS_Viptela.pdf",
+             "page": "43", "section_path": "Templates Configuration",
+             "author": "Cisco", "tag": "Bookshelf", "_score": 0.8986,
+             "chunk_index": 49, "chunk_type": "paragraph"},
+            {"title": "00_DTS_Viptela.pdf", "source": "00_DTS_Viptela.pdf",
+             "page": 12, "section_path": "5.1 Physical Devices", "_score": 0.8922},
+        ],
+        "links": [{"title": "FMC Admin Guide", "source": "Cisco",
+                   "url": "https://www.cisco.com/fmc", "tag": "internet"}],
+        "webs": [{"title": "Aviso PSIRT", "url": "https://sec.cloudapps.cisco.com/x",
+                  "domain": "cisco.com", "description": "Advisory"}],
+        "thinking_process": ["", "", "enhanced"],
+        "mcp_tools": [{"name": "fmg_task_log", "status": "error",
+                       "args": {}, "error": "Timeout calling MCP tool"}],
+        "follow_ups": ["¿Y los ISR?"],
+        "artifacts": [{"id": "a1", "version": 1, "title": "Cuadro"}],
+        "attachments": [{"name": "informe.docx", "url": "/files/x"}],
+        "error": None,
+    }
+
+
+class TestContract640:
+    def test_parse_full_payload(self):
+        r = TTKIAClient._parse_query_response(_payload_640())
+        assert r.text.startswith("Los modelos")
+        assert r.evaluation == "La respuesta cita la tabla de modelos del DTS."
+        # Fuentes con todo su contexto
+        d = r.docs[0]
+        assert d.page == 43 and isinstance(d.page, int)
+        assert d.section_path == "Templates Configuration"
+        assert d.relevance == pytest.approx(0.8986)
+        assert d.author == "Cisco"
+        # links como Source, no como str
+        assert r.links[0].title == "FMC Admin Guide"
+        assert r.links[0].url == "https://www.cisco.com/fmc"
+        # webs conservan la url
+        assert r.webs[0].url.startswith("https://")
+        assert r.webs[0].is_web
+        assert not r.docs[0].is_web
+        # campos nuevos
+        assert r.artifacts[0]["id"] == "a1"
+        assert r.attachments[0]["name"] == "informe.docx"
+        assert r.mcp_tools[0].error == "Timeout calling MCP tool"
+        # marcadores vacíos fuera
+        assert r.thinking_process == ["enhanced"]
+        assert len(r.sources) == 4
+
+    def test_str_is_full_text_without_evaluation(self):
+        r = TTKIAClient._parse_query_response(_payload_640())
+        assert str(r) == r.text
+        assert "%" not in str(r)[:6]
+        assert r.summary().startswith("[90%]")
+
+    def test_recommended_response_is_deprecated_alias(self):
+        r = TTKIAClient._parse_query_response(_payload_640())
+        with pytest.warns(DeprecationWarning):
+            assert r.recommended_response == r.evaluation
+
+    def test_citations_resolved_and_deduplicated(self):
+        r = TTKIAClient._parse_query_response(_payload_640())
+        markers = [c.marker for c in r.citations]
+        assert markers == ["[doc:1]", "[doc:2]", "[link:1]", "[web:1]"]
+        assert r.citations[0].source.page == 43
+        assert [s.title for s in r.cited_sources] == [
+            "01_DTS_Viptela.pdf", "00_DTS_Viptela.pdf", "FMC Admin Guide", "Aviso PSIRT"]
+
+    def test_citation_out_of_range_has_no_source(self):
+        p = _payload_640()
+        p["response_text"] = "Dato [doc:9]."
+        r = TTKIAClient._parse_query_response(p)
+        assert r.citations[0].source is None
+        assert r.cited_sources == []
+
+    def test_text_plain(self):
+        r = TTKIAClient._parse_query_response(_payload_640())
+        assert "[doc:" not in r.text_plain
+        assert "C1111 [1][2]." in r.text_plain
+
+    def test_text_with_references(self):
+        out = TTKIAClient._parse_query_response(_payload_640()).text_with_references()
+        assert "## Referencias" in out
+        assert "### Documentos" in out
+        assert "[1] **01_DTS_Viptela.pdf** — *Cisco* — pág. 43, Templates Configuration" in out
+        assert "### Enlaces internos" in out and "https://www.cisco.com/fmc" in out
+        assert "### Web" in out and "https://sec.cloudapps.cisco.com/x" in out
+        assert "[doc:" not in out
+
+    def test_text_without_citations_has_no_references_section(self):
+        p = _payload_640()
+        p["response_text"] = "Sin citas."
+        assert TTKIAClient._parse_query_response(p).text_with_references() == "Sin citas."
+
+    def test_legacy_links_as_strings(self):
+        p = _payload_640()
+        p["links"] = ["https://legacy.example.com/page"]
+        r = TTKIAClient._parse_query_response(p)
+        assert r.links[0].source == "https://legacy.example.com/page"
+        assert r.links[0].is_web
+
+    def test_missing_optional_fields(self):
+        r = TTKIAClient._parse_query_response({"success": True, "response_text": "ok"})
+        assert r.text == "ok"
+        assert r.evaluation is None
+        assert r.docs == [] and r.links == [] and r.webs == []
+        assert r.artifacts == [] and r.attachments == []
+        assert r.citations == []
+
+    def test_null_lists_from_backend(self):
+        p = _payload_640()
+        for k in ("docs", "links", "webs", "follow_ups", "artifacts", "attachments", "mcp_tools"):
+            p[k] = None
+        r = TTKIAClient._parse_query_response(p)
+        assert r.sources == [] and r.follow_ups == [] and r.mcp_tools == []
+
+    def test_bad_page_value(self):
+        s = Source.model_validate({"title": "x", "page": "n/a", "section_path": None})
+        assert s.page is None and s.section_path == ""
+
+
+class TestContract641:
+    def test_new_field_names(self):
+        p = _payload_640()
+        p.pop("recommended_response")
+        p["evaluation"] = "Evaluación nueva"
+        p["reasoning"] = "Primero miro el DTS..."
+        r = TTKIAClient._parse_query_response(p)
+        assert r.evaluation == "Evaluación nueva"
+        assert r.reasoning == "Primero miro el DTS..."
+
+
+class TestConversationMessageSources:
+    def test_history_keeps_references(self):
+        from ttkia_sdk.models import Conversation
+        conv = Conversation(**{
+            "conversation_id": "c1",
+            "messages": [
+                {"role": "human", "content": "q"},
+                {"role": "assistant", "content": "a [doc:1]",
+                 "recommended_response": "eval", "confidence": 0.8,
+                 "docs": [{"title": "d.pdf", "page": 3, "_score": 0.9}],
+                 "links": None, "webs": [{"title": "w", "url": "https://w"}]},
+            ],
+        })
+        m = conv.assistant_messages[0]
+        assert m.evaluation == "eval"
+        assert m.docs[0].page == 3 and m.docs[0].relevance == 0.9
+        assert m.links == []
+        assert m.webs[0].is_web
+
+
+class TestConversationMessageRobustness:
+    def test_message_without_content(self):
+        from ttkia_sdk.models import ConversationMessage
+        assert ConversationMessage(role="assistant", content=None).content == ""
+        assert ConversationMessage(role="assistant").content == ""
