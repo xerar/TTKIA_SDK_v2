@@ -799,3 +799,34 @@ class TestConversationMessageRobustness:
         from ttkia_sdk.models import ConversationMessage
         assert ConversationMessage(role="assistant", content=None).content == ""
         assert ConversationMessage(role="assistant").content == ""
+
+
+class TestCodeQueryNotices:
+    def _client(self, data):
+        client = TTKIAClient("https://test.com", api_key="ttkia_sk_test")
+        client._http_sync.post = MagicMock(return_value=_mock_http_response(data))
+        return client
+
+    def test_notice_parsed(self):
+        client = self._client({
+            "success": True, "conversation_id": "s1", "message_id": "m1",
+            "response_text": "ok", "token_counts": {"input": 10, "output": 5},
+            "notices": [{"type": "model_notice", "reason": "refusal",
+                         "from_model": "claude_sonnet_v5_5",
+                         "to_model": "claude_sonnet_v5",
+                         "message": "Sonnet 5.5 → Sonnet 5: declinó."}],
+        })
+        qr = client.code_query("x")
+        assert len(qr.notices) == 1
+        n = qr.notices[0]
+        assert n.reason == "refusal" and n.to_model == "claude_sonnet_v5"
+        assert str(n) == "Sonnet 5.5 → Sonnet 5: declinó."
+        client.close()
+
+    def test_backend_without_notices(self):
+        client = self._client({
+            "success": True, "conversation_id": "s1", "message_id": "m1",
+            "response_text": "ok", "token_counts": {},
+        })
+        assert client.code_query("x").notices == []
+        client.close()

@@ -27,6 +27,7 @@ from ttkia_sdk.models import (
     HealthStatus,
     InsufficientScopeError,
     MCPToolResult,
+    ModelNotice,
     NotFoundError,
     QueryResponse,
     RateLimitError,
@@ -439,6 +440,8 @@ class TTKIAClient:
                 output_tokens=data.get("token_counts", {}).get("output", 0),
             ),
             timing=TimingInfo(raw=[]),
+            notices=[ModelNotice(**n) for n in data.get("notices") or []
+                     if isinstance(n, dict)],
             error=data.get("error"),
         )
 
@@ -454,7 +457,9 @@ class TTKIAClient:
 
         Yields:
             dict: Events with 'type' and 'content' keys.
-                  Types: 'mcp', 'text', 'done', 'error'
+                  Types: 'mcp', 'text', 'done', 'error', 'model_notice'
+                  ('model_notice' trae reason/from_model/to_model/message,
+                  ver ModelNotice)
         '''
         payload = {"query": query}
         if conversation_id:

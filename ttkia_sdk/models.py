@@ -221,6 +221,24 @@ class MCPToolResult(BaseModel):
         return f"❌ {self.name}: {self.error or self.status}"
 
 
+class ModelNotice(BaseModel):
+    """Aviso de degradación de modelo. Backends anteriores no lo envían.
+
+    La petición no la sirvió el modelo previsto. `reason`:
+      - "refusal": el filtro de seguridad del proveedor declinó y se repitió
+        con el modelo de reserva (`refusal_fallback`).
+      - "budget": tope de gasto del modelo avanzado alcanzado.
+    En /code/stream llega como evento `model_notice` con estos mismos campos.
+    """
+    reason: str = ""
+    from_model: str = ""
+    to_model: str = ""
+    message: str = ""
+
+    def __str__(self) -> str:
+        return self.message or f"{self.from_model} → {self.to_model} ({self.reason})"
+
+
 # ═══════════════════════════════════════════════════════════
 # QUERY RESPONSE
 # ═══════════════════════════════════════════════════════════
@@ -264,6 +282,9 @@ class QueryResponse(BaseModel):
     follow_ups: List[str] = Field(default_factory=list)
     artifacts: List[Dict[str, Any]] = Field(default_factory=list)
     attachments: List[Dict[str, Any]] = Field(default_factory=list)
+    # Degradaciones de modelo de esta petición. Hoy solo lo rellena
+    # code_query (/code/query); vacío si no hubo o el backend no lo envía.
+    notices: List[ModelNotice] = Field(default_factory=list)
     error: Optional[str] = None
 
     # ── Estado ────────────────────────────────────────────────
